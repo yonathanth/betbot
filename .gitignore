@@ -1,5 +1,9 @@
+# Dependency directories
+node_modules/
+
+# Environment files
 .env
-.node_modules
-.node_modules/*
-.node_modules/
-.node_modules/
+.env*
+
+# System files
+.DS_Store

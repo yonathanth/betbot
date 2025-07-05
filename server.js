@@ -1,42 +1,36 @@
 require("dotenv").config();
-const { testConnection, initializeDatabase } = require("./config/database");
+const { initializeBot } = require("./services/botService");
 const { setupRoutes } = require("./routes/botRoutes");
 
-async function startBot() {
+async function startServer() {
   try {
-    console.log("Starting BetBot...");
+    console.log("🚀 Starting betbot server...");
+    console.log("📡 Environment:", process.env.NODE_ENV || "development");
 
-    // Test database connection
-    await testConnection();
+    // Initialize bot first
+    await initializeBot();
 
-    // Initialize database schema
-    await initializeDatabase();
-
-    // Initialize services
-    require("./services/dbService");
-    require("./services/botService");
-
-    // Setup bot routes
+    // Setup routes after bot is ready
     setupRoutes();
 
-    console.log("Bot is running successfully!");
-    console.log("Available commands:");
-    console.log("   /start - Start using the bot");
-    console.log("   /admin - Access admin panel (admin only)");
+    console.log("✅ betbot server started successfully!");
+    console.log("🤖 Bot is now ready to receive messages!");
   } catch (error) {
-    console.error("Failed to start bot:", error.message);
+    console.error("❌ Failed to start server:", error.message);
     process.exit(1);
   }
 }
 
-// Handle process termination
+// Graceful shutdown
 process.on("SIGINT", () => {
-  console.log("\n⏹️  Bot shutting down...");
+  console.log("\n🛑 Shutting down gracefully...");
   process.exit(0);
 });
 
-process.on("unhandledRejection", (error) => {
-  console.error("❌ Unhandled promise rejection:", error);
+process.on("SIGTERM", () => {
+  console.log("\n🛑 Shutting down gracefully...");
+  process.exit(0);
 });
 
-startBot();
+// Start the server
+startServer();

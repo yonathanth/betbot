@@ -1,5 +1,14 @@
-const { bot, getState, setState } = require("../services/botService");
+const {
+  getBot,
+  getState,
+  setState,
+  clearState,
+} = require("../services/botService");
+const { createUser, getUser } = require("../services/dbService");
 const db = require("../services/dbService");
+
+// Function to get bot instance
+const bot = () => getBot();
 
 module.exports = {
   async stopHandler(msg) {
@@ -8,60 +17,142 @@ module.exports = {
       // Clear user state
       setState(chatId, { step: null });
 
-      await bot.sendMessage(
+      await bot().sendMessage(
         chatId,
-        "🛑 <b>Conversation Stopped</b>\n\n" +
-          "Your current conversation has been reset.\n\n" +
-          "📋 Available commands:\n" +
-          "• /start - Begin property listing\n" +
-          "• /admin - Access admin panel (admin only)\n" +
-          "• /stop - Stop current conversation\n\n" +
-          "Use /start when you're ready to list a property! 🏡",
+        "🛑 <b>ውይይቱ ተቋርጧል</b>\n\n" +
+          "• /start - ቤቶን ለማስተዋወቅ \n" +
+          "• /stop - ውይይቱን ለማቆም\n\n" +
+          "ቤቶን ለማስተዋወቅ ዝግጁ ሲሆኑ /start ይንኩ! 🛖 ",
         { parse_mode: "HTML" }
       );
     } catch (error) {
       console.error("Error in stopHandler:", error);
-      bot.sendMessage(
-        msg.chat.id,
-        "❌ Something went wrong. Please try /start to begin again."
-      );
+      bot().sendMessage(msg.chat.id, "❌ይቅርታ! እባክዎ /start ተጠቅመው እንደገና ይሞክሩ።");
     }
   },
+
   async startHandler(msg) {
     try {
       const chatId = msg.chat.id;
       const user = await db.getUser(chatId);
 
-      if (!user) {
-        await db.createUser(chatId);
-        setState(chatId, { step: "get_name" });
-        return bot.sendMessage(
-          chatId,
-          "👋 Welcome to PropertyBot!\n\n" +
-            "I'll help you list your property for sale or rent.\n" +
-            "Let's start by getting some basic information.\n\n" +
-            "Please share your name:"
-        );
+      // Show greeting for new users or users without complete registration
+      if (!user || !user.name || !user.phone) {
+        await this.showGreeting(chatId);
+
+        if (!user) {
+          await db.createUser(chatId);
+        }
+
+        if (!user || !user.name) {
+          setState(chatId, { step: "get_name" });
+          return bot().sendMessage(chatId, "እባክዎ ስምዎን ያስገቡ:");
+        }
+
+        if (!user.phone) {
+          setState(chatId, { step: "get_phone" });
+          return bot().sendMessage(chatId, "📱 እባክዎ የስልክ ቁጥርዎን ያስገቡ:");
+        }
       }
 
-      if (!user.name) {
-        setState(chatId, { step: "get_name" });
-        return bot.sendMessage(chatId, "Please share your name:");
-      }
-
-      if (!user.phone) {
-        setState(chatId, { step: "get_phone" });
-        return bot.sendMessage(chatId, "📱 Please share your phone number:");
-      }
-
-      // User is fully registered, proceed to listing
-      setState(chatId, { step: null });
-      return require("./postController").askPropertyType(chatId);
+      // User is registered, ask for listing type
+      return this.askListingType(chatId);
     } catch (error) {
       console.error("Error in startHandler:", error);
-      bot.sendMessage(
-        msg.chat.id,
-        "❌ Something went wrong. Please try again."
+      bot().sendMessage(msg.chat.id, "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ።");
+    }
+  },
+
+  async showGreeting(chatId) {
+    try {
+      const welcomeMessage = `
+<b> 🛖 ሰላም! ወደ ቤት ቦት እንኳን በደህና መጡ! </b>
+
+
+🔹 <b>ቤት ወይም የስራ ቦታ ለማከራየት</b> - ይፈልጋሉ?
+🚀 <b>በቀላሉ ለሺዎች ይድረሱ:</b>
+
+
+ <b>ለመጀመር የሚቀጥለውን ቁልፍ ይምረጡ!</b>
+      `;
+
+      await bot().sendMessage(chatId, welcomeMessage, {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "🛖 ለመጀመር ይህን ይጫኑ",
+                callback_data: "start_listing",
+              },
+            ],
+          ],
+        },
+      });
+    } catch (error) {
+      console.error("Error showing greeting:", error);
+      await bot().sendMessage(chatId, "ሰላም! ለመጀመር /start ይጫኑ።");
+    }
+  },
+
+  async askListingType(chatId) {
+    try {
+      const user = await db.getUser(chatId);
+
+      // Check if user already has a user_type (already asked before)
+      if (user && user.user_type) {
+        // Skip asking and go straight to property type
+        setState(chatId, { listing_type: "rent" });
+        return require("./postController").askPropertyType(chatId);
+      }
+
+      await bot().sendMessage(chatId, "👤 የእርስዎ ድርሻ ምንድ ነው?", {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "🛖  ደላላ",
+                callback_data: "listing_type_broker",
+              },
+            ],
+            [
+              {
+                text: "🛖  ባለቤት / አከራይ",
+                callback_data: "listing_type_owner",
+              },
+            ],
+          ],
+        },
+      });
+      setState(chatId, { step: "awaiting_listing_type" });
+    } catch (error) {
+      console.error("Error in askListingType:", error);
+      bot().sendMessage(chatId, "❌ይቅርታ! እባክዎ /start ተጠቅመው እንደገና ይሞክሩ።");
+    }
+  },
+
+  async handleListingTypeSelection(msg, listingType) {
+    const chatId = msg.chat.id;
+    try {
+      const userType = listingType.split("_")[2]; // broker/owner
+      const typeText = userType === "broker" ? "ደላላ" : "አከራይ";
+
+      await bot().editMessageText(`👤 ${typeText}`, {
+        chat_id: chatId,
+        message_id: msg.message_id,
+      });
+
+      // Save user type and set listing type to rent (bot is only for rent)
+      await db.updateUser(chatId, { user_type: userType });
+      setState(chatId, { listing_type: "rent" });
+
+      // Now ask for property type
+      return require("./postController").askPropertyType(chatId);
+    } catch (error) {
+      console.error("Error in handleListingTypeSelection:", error);
+      await bot().sendMessage(
+        chatId,
+        "❌ ምርጫዎን ማስቀመጥ አልተቻለም፣ እባክዎ እንደገና ይሞክሩ።"
       );
     }
   },
@@ -71,21 +162,18 @@ module.exports = {
       const chatId = msg.chat.id;
 
       if (!msg.text || msg.text.length < 2) {
-        return bot.sendMessage(
+        return bot().sendMessage(
           chatId,
-          "❌ Please enter a valid name (at least 2 characters):"
+          "❌ እባክዎ ትክክለኛ ስም ያስገቡ (ቢያንስ 2 ፊደሎች):"
         );
       }
 
       await db.updateUser(chatId, { name: msg.text.trim() });
       setState(chatId, { step: "get_phone" });
-      bot.sendMessage(chatId, "📱 Now please share your phone number:");
+      bot().sendMessage(chatId, "📱 አሁን እባክዎ የስልክ ቁጥርዎን ያስገቡ:");
     } catch (error) {
       console.error("Error in handleNameInput:", error);
-      bot.sendMessage(
-        msg.chat.id,
-        "❌ Failed to save your name. Please try again:"
-      );
+      bot().sendMessage(msg.chat.id, "❌ ስምዎን ማስቀመጥ ተሳንቶአል። እባክዎ እንደገና ይሞክሩ:");
     }
   },
 
@@ -93,27 +181,27 @@ module.exports = {
     try {
       const chatId = msg.chat.id;
 
-      // Validate phone format
-      if (!/^\+?[\d\s\-()]{10,15}$/.test(msg.text)) {
-        return bot.sendMessage(
+      // Validate phone format - accepting Ethiopian format
+      if (
+        !/^(\+251|251|0)?[79]\d{8}$/.test(msg.text.replace(/[\s\-()]/g, ""))
+      ) {
+        return bot().sendMessage(
           chatId,
-          "❌ Invalid phone format. Please enter a valid phone number:\n" +
-            "Examples: +1234567890, 123-456-7890, (123) 456-7890"
+          "❌ ትክክለኛ የስልክ ቁጥር አይደለም። እባክዎ ትክክለኛ የስልክ ቁጥር ያስገቡ:\n" +
+            "ምሳሌ: 0911234567"
         );
       }
 
       await db.updateUser(chatId, { phone: msg.text.trim() });
       setState(chatId, { step: null });
 
-      await bot.sendMessage(chatId, "✅ Registration complete!");
-
-      // Proceed to property type selection
-      require("./postController").askPropertyType(chatId);
+      // Don't show registration complete, just continue
+      return this.askListingType(chatId);
     } catch (error) {
       console.error("Error in handlePhoneInput:", error);
-      bot.sendMessage(
+      bot().sendMessage(
         msg.chat.id,
-        "❌ Failed to save your phone. Please try again:"
+        "❌ የስልክ ቁጥርዎን ማስቀመጥ አልተቻለም እባክዎ እንደገና ይሞክሩ:"
       );
     }
   },

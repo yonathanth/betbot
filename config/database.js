@@ -1,26 +1,122 @@
 const mysql = require("mysql2/promise");
 
+// Optimized pool configuration for VPS
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
   password: process.env.DB_PASSWORD || "",
   database: process.env.DB_NAME || "betbot",
   waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  idleTimeout: 60000,
-  connectTimeout: 60000,
+  connectionLimit: process.env.NODE_ENV === "production" ? 10 : 5, // Reduced for VPS
+  queueLimit: 5, // Reduced queue limit
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 30000, // Increased keep alive
+  acquireTimeout: 15000, // Reduced timeout
+  connectTimeout: 20000,
+  idleTimeout: 600000, // 10 minutes idle timeout
+  maxRetries: 3,
+  retryDelay: 2000,
+  // Add charset for better performance
+  charset: "utf8mb4",
+  // Enable compression for network efficiency
+  compress: true,
+  // Timezone setting
+  timezone: "+00:00",
 });
 
-// Test database connection
+// Connection monitoring and cleanup
+let connectionMetrics = {
+  created: 0,
+  destroyed: 0,
+  acquired: 0,
+  released: 0,
+};
+
+// Enhanced connection testing and monitoring
 async function testConnection() {
   try {
     const connection = await pool.getConnection();
     console.log("✅ Database connected successfully");
+
+    // Test the connection with a simple query
+    await connection.query("SELECT 1");
+    console.log("✅ Database query test successful");
+
     connection.release();
+
+    // Set up optimized connection monitoring
+    pool.on("error", function (err) {
+      console.error("Database pool error:", err);
+      if (
+        err.code === "PROTOCOL_CONNECTION_LOST" ||
+        err.code === "ECONNRESET" ||
+        err.code === "ETIMEDOUT"
+      ) {
+        console.log("🔄 Connection lost - attempting reconnect...");
+        setTimeout(() => {
+          testConnection().catch(console.error);
+        }, 5000);
+      }
+    });
+
+    // Connection lifecycle monitoring (only in development)
+    if (process.env.NODE_ENV !== "production") {
+      pool.on("acquire", function (connection) {
+        connectionMetrics.acquired++;
+        console.log(
+          `Connection ${connection.threadId} acquired (Total: ${connectionMetrics.acquired})`
+        );
+      });
+
+      pool.on("release", function (connection) {
+        connectionMetrics.released++;
+        console.log(
+          `Connection ${connection.threadId} released (Total: ${connectionMetrics.released})`
+        );
+      });
+
+      pool.on("enqueue", function () {
+        console.log("⏳ Waiting for available connection slot");
+      });
+    }
+
+    // Periodic connection cleanup (every 5 minutes)
+    setInterval(() => {
+      pool.query("SELECT 1").catch((err) => {
+        console.error("Keep-alive query failed:", err.message);
+      });
+    }, 5 * 60 * 1000);
+
+    // Fix: Use our configured connection limit instead of pool.config
+    const connectionLimit = process.env.NODE_ENV === "production" ? 10 : 5;
+    console.log(`📊 Pool configured with ${connectionLimit} max connections`);
   } catch (error) {
     console.error("❌ Database connection failed:", error.message);
+
+    // If it's a connection error, wait and retry
+    if (
+      error.code === "ECONNREFUSED" ||
+      error.code === "ECONNRESET" ||
+      error.code === "ETIMEDOUT"
+    ) {
+      console.log("🔄 Retrying connection in 10 seconds...");
+      setTimeout(testConnection, 10000);
+      return;
+    }
+
     process.exit(1);
+  }
+}
+
+// Graceful pool shutdown
+async function closePool() {
+  try {
+    console.log("🔄 Closing database pool...");
+    await pool.end();
+    console.log("✅ Database pool closed successfully");
+    console.log(`📊 Final connection metrics:`, connectionMetrics);
+  } catch (error) {
+    console.error("❌ Error closing database pool:", error.message);
   }
 }
 
@@ -34,6 +130,7 @@ async function initializeDatabase() {
         telegram_id BIGINT UNIQUE NOT NULL,
         name VARCHAR(255),
         phone VARCHAR(50),
+        user_type ENUM('broker', 'owner') DEFAULT NULL,
         is_admin BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -48,11 +145,21 @@ async function initializeDatabase() {
         id INT PRIMARY KEY AUTO_INCREMENT,
         user_id INT NOT NULL,
         property_type ENUM('residential', 'commercial') NOT NULL,
+        listing_type ENUM('rent') DEFAULT 'rent',
         title VARCHAR(500),
+        villa_type VARCHAR(100),
+        villa_type_other VARCHAR(255),
+        rooms_count INT,
+        floor VARCHAR(50),
+        bedrooms INT,
+        bathrooms INT,
+        bathroom_type VARCHAR(50),
+        property_size VARCHAR(100),
         description TEXT,
         location VARCHAR(255),
         price VARCHAR(100),
         contact_info TEXT,
+        display_name VARCHAR(255),
         status ENUM('pending', 'approved', 'rejected', 'published') DEFAULT 'pending',
         admin_notes TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -62,9 +169,61 @@ async function initializeDatabase() {
         INDEX idx_user_id (user_id),
         INDEX idx_status (status),
         INDEX idx_created_at (created_at),
-        INDEX idx_property_type (property_type)
+        INDEX idx_property_type (property_type),
+        INDEX idx_listing_type (listing_type)
       )
     `);
+
+    // Add new columns to existing tables if they don't exist
+
+    // Add user_type column to users table if it doesn't exist
+    try {
+      await pool.execute(
+        `ALTER TABLE users ADD COLUMN user_type ENUM('broker', 'owner') DEFAULT NULL`
+      );
+      console.log(`✅ Added column: user_type to users table`);
+    } catch (error) {
+      if (error.message.includes("Duplicate column name")) {
+        console.log(`↳ Column user_type already exists in users table`);
+      } else {
+        console.error(`Error adding column user_type to users:`, error.message);
+      }
+    }
+
+    // Add new columns to existing posts table if they don't exist
+    const columns = [
+      {
+        name: "listing_type",
+        definition: "ENUM('rent') DEFAULT 'rent'",
+      },
+      { name: "villa_type", definition: "VARCHAR(100)" },
+      { name: "villa_type_other", definition: "VARCHAR(255)" },
+      { name: "rooms_count", definition: "INT" },
+      { name: "floor", definition: "VARCHAR(50)" },
+      { name: "bedrooms", definition: "INT" },
+      { name: "bathrooms", definition: "INT" },
+      { name: "bathroom_type", definition: "VARCHAR(50)" },
+      { name: "property_size", definition: "VARCHAR(100)" },
+      { name: "display_name", definition: "VARCHAR(255)" },
+      { name: "platform_link", definition: "TEXT" },
+      { name: "platform_name", definition: "VARCHAR(100)" },
+    ];
+
+    for (const column of columns) {
+      try {
+        await pool.execute(
+          `ALTER TABLE posts ADD COLUMN ${column.name} ${column.definition}`
+        );
+        console.log(`✅ Added column: ${column.name}`);
+      } catch (error) {
+        if (error.message.includes("Duplicate column name")) {
+          // Column already exists, skip
+          console.log(`↳ Column ${column.name} already exists`);
+        } else {
+          console.error(`Error adding column ${column.name}:`, error.message);
+        }
+      }
+    }
 
     // Create post_images table for future image support
     await pool.execute(`
@@ -79,6 +238,21 @@ async function initializeDatabase() {
       )
     `);
 
+    // Create post_clicks table for tracking contact button clicks
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS post_clicks (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        post_id INT NOT NULL,
+        user_telegram_id BIGINT NOT NULL,
+        click_type ENUM('contact', 'view') DEFAULT 'contact',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+        INDEX idx_post_id (post_id),
+        INDEX idx_user_telegram_id (user_telegram_id),
+        INDEX idx_created_at (created_at)
+      )
+    `);
+
     console.log("Database schema initialized successfully");
   } catch (error) {
     console.error("Database schema initialization failed:", error.message);
@@ -86,4 +260,4 @@ async function initializeDatabase() {
   }
 }
 
-module.exports = { pool, testConnection, initializeDatabase };
+module.exports = { pool, testConnection, initializeDatabase, closePool };
