@@ -4,11 +4,11 @@ on:
   push:
     branches:
       - staging
-      - master
+      - main  # Changed from 'master' to 'main'
 
 jobs:
   deploy_qa:
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/main'  # Changed from 'master' to 'main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -26,9 +26,9 @@ jobs:
             
             if [ -d ".git" ]; then
               git stash
-              git pull origin master
+              git pull origin main  # Changed from 'master' to 'main'
             else
-              git clone -b master https://github.com/yonathanth/betbot.git .
+              git clone -b main https://github.com/yonathanth/betbot.git .  # Changed branch here too
             fi
             
             npm install --force
