@@ -1,0 +1,46 @@
+name: Deploy betbot
+
+on:
+  push:
+    branches:
+      - staging
+      - master
+
+jobs:
+  deploy_qa:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Connect with VPS
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            mkdir -p apps/betbot && cd apps/betbot
+            
+            if [ -d ".git" ]; then
+              git stash
+              git pull origin master
+            else
+              git clone -b master https://github.com/yonathanth/betbot.git .
+            fi
+            
+            npm install --force
+
+            pid=$(pm2 pid "betbot" 2>/dev/null)
+            if [ -n "$pid" ]; then
+              echo "Reloading betbot"
+              pm2 reload "betbot"
+              pm2 save
+            else
+              echo "New application"
+              pm2 start npm --name "betbot" -- start
+              pm2 startup
+              pm2 save
+            fi
