@@ -1,4 +1,16 @@
 const { pool, closePool } = require("../config/database");
+const mysql = require("mysql2/promise");
+
+// Utility functions for PREPOSTS offset handling
+function getDisplayPostId(databaseId) {
+  const preposts = parseInt(process.env.PREPOSTS) || 0;
+  return databaseId + preposts;
+}
+
+function getDatabasePostId(displayId) {
+  const preposts = parseInt(process.env.PREPOSTS) || 0;
+  return displayId - preposts;
+}
 
 // Add retry wrapper for database operations
 async function withRetry(operation, maxRetries = 3) {
@@ -63,6 +75,10 @@ if (process.env.NODE_ENV === "production") {
 }
 
 module.exports = {
+  // Utility functions for PREPOSTS
+  getDisplayPostId,
+  getDatabasePostId,
+
   // Cleanup and connection management
   async closeConnections() {
     await closePool();
@@ -231,6 +247,25 @@ module.exports = {
     }
   },
 
+  async getPendingPostsForUser(telegramId) {
+    try {
+      const [rows] = await pool.query(
+        `
+        SELECT p.*, u.name as user_name, u.telegram_id, u.phone 
+        FROM posts p
+        JOIN users u ON p.user_id = u.id
+        WHERE p.status = 'pending' AND u.telegram_id = ?
+        ORDER BY p.created_at DESC
+      `,
+        [telegramId]
+      );
+      return rows;
+    } catch (error) {
+      console.error("Error getting pending posts for user:", error);
+      throw error;
+    }
+  },
+
   async updatePostStatus(postId, status, adminNotes = null) {
     try {
       const updateData = { status };
@@ -251,6 +286,18 @@ module.exports = {
       );
     } catch (error) {
       console.error("Error updating post status:", error);
+      throw error;
+    }
+  },
+
+  async updatePostChannelMessageId(postId, messageId) {
+    try {
+      await pool.query("UPDATE posts SET channel_message_id = ? WHERE id = ?", [
+        messageId,
+        postId,
+      ]);
+    } catch (error) {
+      console.error("Error updating post channel message ID:", error);
       throw error;
     }
   },
@@ -326,7 +373,7 @@ module.exports = {
       for (const photo of photos) {
         await pool.query(
           "INSERT INTO post_images (post_id, telegram_file_id, file_type) VALUES (?, ?, ?)",
-          [postId, photo.file_id, "photo"]
+          [postId, photo.file_id, photo.type || "photo"]
         );
       }
 
@@ -402,6 +449,50 @@ module.exports = {
     }
   },
 
+  async getPostClickers(postId) {
+    try {
+      const [clickers] = await pool.query(
+        `SELECT DISTINCT 
+           pc.user_telegram_id,
+           u.name,
+           u.phone,
+           COUNT(pc.id) as click_count,
+           MAX(pc.created_at) as last_click
+         FROM post_clicks pc
+         LEFT JOIN users u ON pc.user_telegram_id = u.telegram_id
+         WHERE pc.post_id = ?
+         GROUP BY pc.user_telegram_id, u.name, u.phone
+         ORDER BY last_click DESC`,
+        [postId]
+      );
+
+      return clickers;
+    } catch (error) {
+      console.error("Error getting post clickers:", error);
+      throw error;
+    }
+  },
+
+  async getUserPosts(telegramId) {
+    try {
+      const [posts] = await pool.query(
+        `SELECT 
+           p.id, p.title, p.location, p.price, p.status, p.created_at, 
+           (SELECT COUNT(*) FROM post_clicks WHERE post_id = p.id) as total_clicks
+         FROM posts p
+         JOIN users u ON p.user_id = u.id
+         WHERE u.telegram_id = ? 
+         ORDER BY p.created_at DESC`,
+        [telegramId]
+      );
+
+      return posts;
+    } catch (error) {
+      console.error("Error getting user posts:", error);
+      throw error;
+    }
+  },
+
   async getPostByChannelMessageId(messageId, channelId) {
     try {
       // This is a simple approach - in a real app you'd store message IDs
@@ -416,11 +507,37 @@ module.exports = {
   async getAdmins() {
     try {
       const [rows] = await pool.query(
-        "SELECT telegram_id FROM users WHERE is_admin = TRUE"
+        "SELECT telegram_id FROM users WHERE is_admin = TRUE AND (is_active IS NULL OR is_active = TRUE)"
       );
       return rows;
     } catch (error) {
       console.error("Error getting admins:", error);
+      throw error;
+    }
+  },
+
+  async markAdminAsInactive(telegramId) {
+    try {
+      await pool.query(
+        "UPDATE users SET is_active = FALSE WHERE telegram_id = ? AND is_admin = TRUE",
+        [telegramId]
+      );
+      console.log(`✅ Admin ${telegramId} marked as inactive in database`);
+    } catch (error) {
+      console.error(`Error marking admin ${telegramId} as inactive:`, error);
+      throw error;
+    }
+  },
+
+  async reactivateAdmin(telegramId) {
+    try {
+      await pool.query(
+        "UPDATE users SET is_active = TRUE WHERE telegram_id = ? AND is_admin = TRUE",
+        [telegramId]
+      );
+      console.log(`✅ Admin ${telegramId} reactivated in database`);
+    } catch (error) {
+      console.error(`Error reactivating admin ${telegramId}:`, error);
       throw error;
     }
   },
@@ -430,6 +547,19 @@ module.exports = {
       await pool.query("DELETE FROM post_images WHERE post_id = ?", [postId]);
     } catch (error) {
       console.error("Error deleting post photos:", error);
+      throw error;
+    }
+  },
+
+  async saveAdminPostPhoto(postId, photo) {
+    try {
+      await pool.query(
+        "INSERT INTO post_images (post_id, telegram_file_id, file_type) VALUES (?, ?, ?)",
+        [postId, photo.file_id, photo.type || "photo"]
+      );
+      console.log(`✅ Admin saved photo for post #${postId}`);
+    } catch (error) {
+      console.error("Error saving admin post photo:", error);
       throw error;
     }
   },
@@ -455,6 +585,31 @@ module.exports = {
       );
     } catch (error) {
       console.error("Error updating post by admin:", error);
+      throw error;
+    }
+  },
+
+  async getLatestPendingPost(telegramId) {
+    try {
+      const [users] = await pool.query(
+        "SELECT id FROM users WHERE telegram_id = ?",
+        [telegramId]
+      );
+
+      if (!users.length) {
+        throw new Error("User not found");
+      }
+
+      const userId = users[0].id;
+
+      const [posts] = await pool.query(
+        "SELECT * FROM posts WHERE user_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+        [userId]
+      );
+
+      return posts[0] || null;
+    } catch (error) {
+      console.error("Error getting latest pending post:", error);
       throw error;
     }
   },

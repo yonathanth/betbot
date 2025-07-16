@@ -73,6 +73,7 @@ const addToMediaGroup = (mediaGroupId, photo) => {
     mediaGroups.set(mediaGroupId, {
       photos: [],
       timestamp: Date.now(),
+      processed: false,
     });
   }
   mediaGroups.get(mediaGroupId).photos.push(photo);
@@ -283,4 +284,5 @@ module.exports = {
   addToMediaGroup,
   getMediaGroup,
   clearMediaGroup,
+  mediaGroups,
 };

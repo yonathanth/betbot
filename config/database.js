@@ -130,14 +130,31 @@ async function initializeDatabase() {
         telegram_id BIGINT UNIQUE NOT NULL,
         name VARCHAR(255),
         phone VARCHAR(50),
-        user_type ENUM('broker', 'owner') DEFAULT NULL,
+        user_type ENUM('broker', 'owner', 'tenant') DEFAULT NULL,
         is_admin BOOLEAN DEFAULT FALSE,
+        is_active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_telegram_id (telegram_id),
         INDEX idx_created_at (created_at)
       )
     `);
+
+    // Add is_active column to existing users table if it doesn't exist
+    try {
+      await pool.execute(`
+        ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE
+      `);
+      console.log("✅ Added is_active column to users table");
+    } catch (error) {
+      // Column already exists, which is fine
+      if (!error.message.includes("Duplicate column name")) {
+        console.error(
+          "Warning: Could not add is_active column:",
+          error.message
+        );
+      }
+    }
 
     // Create posts table
     await pool.execute(`
@@ -190,6 +207,33 @@ async function initializeDatabase() {
       }
     }
 
+    // Update user_type ENUM to include 'tenant' if needed
+    try {
+      await pool.execute(
+        `ALTER TABLE users MODIFY COLUMN user_type ENUM('broker', 'owner', 'tenant') DEFAULT NULL`
+      );
+      console.log(`✅ Updated user_type ENUM to include 'tenant'`);
+    } catch (error) {
+      if (error.message.includes("tenant")) {
+        console.log(`↳ user_type already includes 'tenant' value`);
+      } else {
+        console.error(`Error updating user_type ENUM:`, error.message);
+      }
+    }
+
+    // Add 'rented' status to posts table if it doesn't exist
+    try {
+      await pool.execute(
+        `ALTER TABLE posts MODIFY COLUMN status ENUM('pending', 'approved', 'rejected', 'published', 'rented') DEFAULT 'pending'`
+      );
+      console.log(`✅ Added 'rented' status to posts table`);
+    } catch (error) {
+      console.log(
+        `↳ Posts status column already includes 'rented' or error:`,
+        error.message
+      );
+    }
+
     // Add new columns to existing posts table if they don't exist
     const columns = [
       {
@@ -207,6 +251,7 @@ async function initializeDatabase() {
       { name: "display_name", definition: "VARCHAR(255)" },
       { name: "platform_link", definition: "TEXT" },
       { name: "platform_name", definition: "VARCHAR(100)" },
+      { name: "channel_message_id", definition: "INT" },
     ];
 
     for (const column of columns) {

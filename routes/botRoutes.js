@@ -1,4 +1,4 @@
-const { getBot, getState } = require("../services/botService");
+const { getBot, getState, clearState } = require("../services/botService");
 const userController = require("../controllers/userController");
 const postController = require("../controllers/postController");
 const adminController = require("../controllers/adminController");
@@ -68,46 +68,70 @@ function setupRoutes() {
             "contact"
           );
 
-          // Send contact info privately
-          await require("../services/channelService").sendContactInfoPrivately(
+          // Check if REG is enabled and handle tenant registration
+          if (process.env.REG === "TRUE") {
+            const user = await require("../services/dbService").getUser(
+              msg.from.id
+            );
+
+            // If user doesn't exist or isn't registered, start tenant registration
+            if (!user || !user.name || !user.phone) {
+              console.log(
+                `Starting tenant registration for user ${msg.from.id}`
+              );
+
+              // Create user if doesn't exist
+              if (!user) {
+                await require("../services/dbService").createUser(msg.from.id);
+              }
+
+              // Set state for tenant registration and store the post info
+              const { setState } = require("../services/botService");
+              setState(msg.from.id, {
+                step: "tenant_get_name",
+                postId: postId,
+                isContactRequest: true,
+              });
+
+              await bot.sendMessage(
+                msg.from.id,
+                "🛖 <b>እንኳን ደህና መጡ!</b>\n\n" +
+                  "የደላላ/አከራይ መረጃ ለማየት እባክዎ ስምዎን ያስገቡ:",
+                { parse_mode: "HTML" }
+              );
+              return;
+            }
+
+            // User exists but check if they have tenant type
+            if (user.user_type !== "tenant") {
+              await require("../services/dbService").updateUser(msg.from.id, {
+                user_type: "tenant",
+              });
+            }
+          }
+
+          // Send combined contact info and welcome message (existing behavior)
+          await require("../services/channelService").sendCombinedContactMessage(
             msg.from.id,
             post
-          );
-
-          // Send welcome message too
-          await bot.sendMessage(
-            chatId,
-            "🎉 እንኳን ወደ ቤት ቦት በደህና መጡ!\n\n" + "ከላይ የተላከው የደላላ/አከራዩ መረጃ ነው።",
-            {
-              reply_markup: {
-                inline_keyboard: [
-                  [
-                    {
-                      text: "🛖  ወደ ቻናሉ መመለስ",
-                      url: `https://t.me/c/${process.env.CHANNEL_ID.replace(
-                        "-100",
-                        ""
-                      )}`,
-                    },
-                  ],
-                  [
-                    {
-                      text: "➕ የራሶን ቤት ለማስታወቅ",
-                      callback_data: "start_my_listing",
-                    },
-                  ],
-                ],
-              },
-            }
           );
         } else {
           await bot.sendMessage(chatId, "❌ ማስታወቂያው አልተገኘም!");
         }
       } catch (error) {
         console.error("Error handling contact deep link:", error);
-        await bot.sendMessage(chatId, "❌ ስህተት ተከስቷል!");
+        // Show broker info even if there's an error, don't fall back to start flow
+        try {
+          await bot.sendMessage(
+            chatId,
+            "❌ የደላላ መረጃ ማምጣት ተሳንቷል። እባክዎ እንደገና ይሞክሩ።"
+          );
+        } catch (fallbackError) {
+          console.error("Fallback error:", fallbackError);
+        }
       }
 
+      // ALWAYS return for contact requests - never proceed to regular start flow
       return;
     }
 
@@ -137,8 +161,34 @@ function setupRoutes() {
     }
   });
 
+  // Handle unknown commands - catch-all pattern for any command not handled above
+  bot.onText(/^\/(.+)/, (msg, match) => {
+    try {
+      const command = match[1];
+      const chatId = msg.chat.id;
+
+      // Only respond if this command wasn't handled by any of the specific patterns above
+      // Check if the command is not one of the known commands
+      if (
+        !["start", "admin", "stop"].some((knownCmd) =>
+          command.startsWith(knownCmd)
+        )
+      ) {
+        bot.sendMessage(
+          chatId,
+          `❌ ያልታወቀ ትዕዛዝ: /${command}\n\n` +
+            `📋 የተዘጋጁ ትዕዛዞች:\n` +
+            `• /start - ማስታወቂያ ለመጀመር\n` +
+            `• /stop - ውይይቱን ለማቆም`
+        );
+      }
+    } catch (error) {
+      console.error("Error handling unknown command:", error);
+    }
+  });
+
   // Message handling based on user state
-  bot.on("message", (msg) => {
+  bot.on("message", async (msg) => {
     try {
       // Skip if it's a command
       if (msg.text && msg.text.startsWith("/")) {
@@ -153,15 +203,62 @@ function setupRoutes() {
         (msg.photo ||
           (msg.document &&
             msg.document.mime_type &&
-            msg.document.mime_type.startsWith("image/"))) &&
-        state?.step === "get_photos"
+            msg.document.mime_type.startsWith("image/")) ||
+          (msg.video && msg.video.file_size <= 50 * 1024 * 1024)) && // 50MB limit for videos
+        (state?.step === "get_photos" ||
+          state?.step === "admin_photo_upload" ||
+          state?.step === "user_photo_upload")
       ) {
-        // If this is part of a media group, handle it specially
-        if (msg.media_group_id) {
-          return postController.handleMediaGroupPhoto(msg);
-        } else {
-          return postController.handlePhotoUpload(msg);
+        // Admin photo upload handling
+        if (state?.step === "admin_photo_upload") {
+          if (msg.media_group_id) {
+            return adminController.handleAdminMediaGroupPhoto(msg);
+          } else {
+            return adminController.handleAdminPhotoUpload(msg);
+          }
         }
+        // User photo editing upload handling
+        else if (state?.step === "user_photo_upload") {
+          if (msg.media_group_id) {
+            return postController.handleUserMediaGroupPhoto(msg);
+          } else {
+            return postController.handleUserPhotoUpload(msg);
+          }
+        }
+        // Regular user photo upload handling
+        else if (state?.step === "get_photos") {
+          if (msg.media_group_id) {
+            return postController.handleMediaGroupPhoto(msg);
+          } else {
+            return postController.handlePhotoUpload(msg);
+          }
+        }
+      }
+
+      // Handle reply keyboard messages (take priority over state)
+      if (msg.text) {
+        const text = msg.text.trim();
+
+        if (text === "🛖 ቤት ለማስተዋወቅ") {
+          // Clear state and start posting (keyboard will be removed by next message)
+          clearState(chatId);
+          return userController.handleStartPostingWithRegistrationCheck(chatId);
+        }
+
+        if (text === "📋 ማስታወቂያዎቼ") {
+          // Show ads (keyboard will be removed by next message)
+          return userController.showMyAds(chatId);
+        }
+
+        if (text === "👤 አካውንት") {
+          // Show account (keyboard will be removed by next message)
+          return userController.showAccount(chatId);
+        }
+      }
+
+      // Handle user editing flow
+      if (state?.step?.startsWith("user_edit_")) {
+        return postController.handleUserEditInput(msg);
       }
 
       switch (state?.step) {
@@ -170,6 +267,21 @@ function setupRoutes() {
           return userController.handleNameInput(msg);
         case "get_phone":
           return userController.handlePhoneInput(msg);
+
+        // Tenant registration flow (for contact requests when REG=TRUE)
+        case "tenant_get_name":
+          return userController.handleTenantNameInput(msg);
+        case "tenant_get_phone":
+          return userController.handleTenantPhoneInput(msg);
+
+        // User account editing flow
+        case "edit_account_name":
+        case "edit_account_phone":
+          return userController.handleAccountEditInput(msg);
+
+        // User rent marking flow
+        case "waiting_rent_post_id":
+          return userController.handleRentPostIdInput(msg);
 
         // Post creation flow - Enhanced
         case "get_rooms_count":
@@ -208,6 +320,7 @@ function setupRoutes() {
         // Admin posting flow
         case "admin_post_name":
         case "admin_post_phone":
+        case "admin_post_platform_link":
           return adminController.handleAdminPostInput(msg);
 
         // Admin rejection reason
@@ -228,22 +341,43 @@ function setupRoutes() {
         case "admin_edit_bathrooms":
         case "admin_edit_property_size":
         case "admin_edit_platform_link":
+        case "admin_edit_photos":
           return adminController.handleEditInput(msg);
 
         default:
-          // No active state - might be a new user
+          // No active state - might be a new user or wrong input
           if (msg.text && !msg.text.startsWith("/")) {
-            // Show greeting for any text message
-            return userController.showGreeting(msg.chat.id);
+            // Simple message instead of full greeting when expecting buttons
+            return bot.sendMessage(
+              msg.chat.id,
+              "❌ እባክዎ ከላይ ካሉት ቁልፎች ብቻ ይምረጡ። አዲስ ማስታወቂያ ለመጀመር /start ይጫኑ።"
+            );
           }
       }
     } catch (error) {
       console.error("Error handling message:", error);
       try {
-        bot.sendMessage(
+        // Clear any problematic state
+        clearState(msg.chat.id);
+
+        await bot.sendMessage(
           msg.chat.id,
-          "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ ወይም /start ተጠቅመው እንደገና ይጀምሩ።"
+          "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ። ዋና ማውጫላይ እየተመለሱ ነው..."
         );
+
+        // Try to return user to main menu if they're registered
+        setTimeout(async () => {
+          try {
+            const user = await require("../services/dbService").getUser(
+              msg.chat.id
+            );
+            if (user && user.name && user.phone) {
+              await userController.showMainMenu(msg.chat.id);
+            }
+          } catch (recoveryError) {
+            console.error("Error during recovery:", recoveryError);
+          }
+        }, 1000);
       } catch (sendError) {
         console.error("Failed to send error message:", sendError);
       }
@@ -258,7 +392,7 @@ function setupRoutes() {
     // Greeting flow
     if (data === "start_listing") {
       await handleCallbackQuery(bot, query, async () => {
-        await userController.askListingType(msg.chat.id);
+        await userController.handleStartListing(query);
       });
     }
 
@@ -280,6 +414,29 @@ function setupRoutes() {
     else if (data.startsWith("title_")) {
       await handleCallbackQuery(bot, query, async () => {
         await postController.handlePropertyTitleSelection(msg, data);
+      });
+    }
+
+    // Account management callbacks
+    else if (data === "edit_account_name") {
+      await handleCallbackQuery(bot, query, async () => {
+        await userController.handleEditAccountName(query);
+      });
+    } else if (data === "edit_account_phone") {
+      await handleCallbackQuery(bot, query, async () => {
+        await userController.handleEditAccountPhone(query);
+      });
+    } else if (data === "refresh_my_ads") {
+      await handleCallbackQuery(bot, query, async () => {
+        await userController.handleRefreshMyAds(query);
+      });
+    } else if (data.startsWith("mark_rented_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        await userController.handleMarkAsRented(query);
+      });
+    } else if (data === "back_to_main_menu") {
+      await handleCallbackQuery(bot, query, async () => {
+        await userController.showMainMenu(query.message.chat.id);
       });
     }
 
@@ -311,28 +468,34 @@ function setupRoutes() {
     // Start new listing
     else if (data === "start_new_listing") {
       await handleCallbackQuery(bot, query, async () => {
-        await postController.handleStartNewListing(msg);
+        await postController.handleStartNewListing(query.message);
       });
     }
 
     // Add new ad from approved notification
     else if (data === "add_new_ad") {
       await handleCallbackQuery(bot, query, async () => {
-        await userController.askListingType(msg.chat.id);
+        await userController.handleStartPostingWithRegistrationCheck(
+          query.message.chat.id
+        );
       });
     }
 
     // Try again after rejection
     else if (data === "try_again_after_rejection") {
       await handleCallbackQuery(bot, query, async () => {
-        await userController.askListingType(msg.chat.id);
+        await userController.handleStartPostingWithRegistrationCheck(
+          query.message.chat.id
+        );
       });
     }
 
     // Start my listing from welcome message
     else if (data === "start_my_listing") {
       await handleCallbackQuery(bot, query, async () => {
-        await userController.askListingType(msg.chat.id);
+        await userController.handleStartPostingWithRegistrationCheck(
+          query.message.chat.id
+        );
       });
     }
 
@@ -355,6 +518,14 @@ function setupRoutes() {
     else if (data === "skip_platform_link") {
       await handleCallbackQuery(bot, query, async () => {
         await postController.skipPlatformLink(msg.chat.id);
+      });
+    } else if (data === "admin_skip_platform_link") {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleAdminSkipPlatformLink(query);
+      });
+    } else if (data === "skip_property_size") {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.skipPropertySize(msg.chat.id);
       });
     }
 
@@ -385,6 +556,26 @@ function setupRoutes() {
       await handleCallbackQuery(bot, query, async () => {
         await adminController.handleAdminCreatePost(query);
       });
+    } else if (data === "admin_photo_add") {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleAdminPhotoAdd(query);
+      });
+    } else if (data === "admin_photo_replace") {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleAdminPhotoReplace(query);
+      });
+    } else if (data === "admin_photo_delete") {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleAdminPhotoDelete(query);
+      });
+    } else if (data === "admin_photos_done") {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleAdminPhotosDone(query);
+      });
+    } else if (data.startsWith("admin_view_clickers_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleViewClickers(query);
+      });
     } else if (data.startsWith("approve_") || data.startsWith("reject_")) {
       await handleCallbackQuery(bot, query, async () => {
         await adminController.handlePostApproval(query);
@@ -400,6 +591,54 @@ function setupRoutes() {
     } else if (data.startsWith("edit_")) {
       await handleCallbackQuery(bot, query, async () => {
         await adminController.handleEditPost(query);
+      });
+    }
+
+    // User editing callbacks
+    else if (data.startsWith("user_edit_field_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.handleUserEditField(query);
+      });
+    } else if (data.startsWith("user_edit_done_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.handleUserEditDone(query);
+      });
+    } else if (data.startsWith("user_edit_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.handleUserEditPost(query);
+      });
+    }
+
+    // User photo editing callbacks
+    else if (data === "user_photo_add") {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.handleUserPhotoAdd(query);
+      });
+    } else if (data === "user_photo_replace") {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.handleUserPhotoReplace(query);
+      });
+    } else if (data === "user_photo_delete") {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.handleUserPhotoDelete(query);
+      });
+    } else if (data === "user_photos_done") {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.handleUserPhotosDone(query);
+      });
+    }
+
+    // User villa type editing
+    else if (data.startsWith("user_villa_edit_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.handleUserVillaTypeEdit(query);
+      });
+    }
+
+    // User bathroom type editing
+    else if (data.startsWith("user_bathroom_edit_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.handleUserBathroomTypeEdit(query);
       });
     }
 

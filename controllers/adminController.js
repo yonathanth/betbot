@@ -25,7 +25,11 @@ function formatPostForAdmin(post) {
   const typeLabel =
     post.property_type === "residential" ? "የሚከራይ ቤት" : "የሚከራይ ስራ ቦታ";
 
-  let message = `<b>${typeLabel}</b> - ID: ${post.id}\n\n`;
+  // Use display ID with PREPOSTS offset
+  const preposts = parseInt(process.env.PREPOSTS) || 0;
+  const displayId = post.id + preposts;
+
+  let message = `<b>${typeLabel}</b> - ID: ${displayId}\n\n`;
 
   if (post.title) {
     message += `🏷️ <b>ዓይነት:</b> ${post.title}`;
@@ -94,6 +98,9 @@ function formatPostForAdmin(post) {
 }
 
 module.exports = {
+  formatPostForAdmin,
+  isAdmin,
+
   async handleAdminCommand(msg) {
     try {
       const chatId = msg.chat.id;
@@ -185,19 +192,30 @@ module.exports = {
         return;
       }
 
-      const postId = parseInt(msg.text);
-      if (!postId || postId < 1) {
+      const displayPostId = parseInt(msg.text);
+      if (!displayPostId || displayPostId < 1) {
         return bot().sendMessage(chatId, "❌ እባክዎ ትክክለኛ Post ID ያስገቡ:");
       }
 
-      const stats = await db.getPostStats(postId);
+      // Convert display ID to database ID
+      const preposts = parseInt(process.env.PREPOSTS) || 0;
+      const databasePostId = displayPostId - preposts;
+
+      if (databasePostId < 1) {
+        return bot().sendMessage(
+          chatId,
+          "❌ ትክክለኛ Post ID አይደለም። እባክዎ ትክክለኛ ቁጥር ያስገቡ።"
+        );
+      }
+
+      const stats = await db.getPostStats(databasePostId);
       if (!stats) {
         return bot().sendMessage(chatId, "❌ ማስታወቂያው አልተገኘም!");
       }
 
       const post = stats.post;
       const statsMessage =
-        `📊<b>Post #${post.id} Statistics</b>\n\n` +
+        `📊<b>Post #${displayPostId} Statistics</b>\n\n` +
         `<b>Title:</b> ${post.title || "N/A"}\n` +
         `<b>Location:</b> ${post.location || "N/A"}\n` +
         `<b>Price:</b> ${post.price || "N/A"}\n` +
@@ -208,7 +226,23 @@ module.exports = {
         `💬 Contact Clicks: ${stats.contactClicks}\n` +
         `👥 Unique Clickers: ${stats.uniqueClickers}`;
 
-      await bot().sendMessage(chatId, statsMessage, { parse_mode: "HTML" });
+      const keyboard = [];
+
+      // Add clickers list button only if there are clickers
+      if (stats.uniqueClickers > 0) {
+        keyboard.push([
+          {
+            text: "👥 View Who Clicked",
+            callback_data: `admin_view_clickers_${databasePostId}`,
+          },
+        ]);
+      }
+
+      await bot().sendMessage(chatId, statsMessage, {
+        parse_mode: "HTML",
+        reply_markup:
+          keyboard.length > 0 ? { inline_keyboard: keyboard } : undefined,
+      });
 
       // Clear state
       setState(chatId, { step: null });
@@ -216,6 +250,89 @@ module.exports = {
       console.error("Error in handlePostStatsInput:", error);
       bot().sendMessage(msg.chat.id, "❌ Error retrieving statistics.");
     }
+  },
+
+  async handleViewClickers(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+
+      if (!(await isAdmin(chatId))) {
+        return bot().answerCallbackQuery(callback.id, {
+          text: "Access denied!",
+        });
+      }
+
+      // Answer callback query first
+      bot().answerCallbackQuery(callback.id);
+
+      const postId = callback.data.split("_")[3]; // admin_view_clickers_123
+      const clickers = await db.getPostClickers(postId);
+
+      if (!clickers.length) {
+        return bot().sendMessage(chatId, "❌ No clickers found for this post.");
+      }
+
+      let clickersMessage = `👥 <b>Post #${postId} Clickers (${clickers.length})</b>\n\n`;
+
+      clickers.forEach((clicker, index) => {
+        const userName = clicker.name || "Unknown";
+        const userPhone = clicker.phone || "No phone";
+        const clickCount = clicker.click_count;
+        const lastClick = new Date(clicker.last_click).toLocaleDateString(
+          "am-ET"
+        );
+
+        clickersMessage += `${index + 1}. <b>${userName}</b>\n`;
+        clickersMessage += `   📱 ${userPhone}\n`;
+        clickersMessage += `   🆔 ${clicker.user_telegram_id}\n`;
+        clickersMessage += `   👆 ${clickCount} click${
+          clickCount > 1 ? "s" : ""
+        }\n`;
+        clickersMessage += `   📅 Last: ${lastClick}\n\n`;
+      });
+
+      // Split message if too long (Telegram has 4096 char limit)
+      if (clickersMessage.length > 4000) {
+        const chunks = this.splitMessage(clickersMessage, 4000);
+        for (const chunk of chunks) {
+          await bot().sendMessage(chatId, chunk, { parse_mode: "HTML" });
+        }
+      } else {
+        await bot().sendMessage(chatId, clickersMessage, {
+          parse_mode: "HTML",
+        });
+      }
+    } catch (error) {
+      console.error("Error in handleViewClickers:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "Error!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+      bot().sendMessage(chatId, "❌ Error retrieving clickers list.");
+    }
+  },
+
+  splitMessage(message, maxLength) {
+    const chunks = [];
+    let currentChunk = "";
+    const lines = message.split("\n");
+
+    for (const line of lines) {
+      if ((currentChunk + line + "\n").length > maxLength) {
+        if (currentChunk) {
+          chunks.push(currentChunk.trim());
+          currentChunk = "";
+        }
+      }
+      currentChunk += line + "\n";
+    }
+
+    if (currentChunk) {
+      chunks.push(currentChunk.trim());
+    }
+
+    return chunks;
   },
 
   async showPendingPosts(callback) {
@@ -247,9 +364,14 @@ module.exports = {
         const photos = await db.getPostPhotos(post.id);
 
         if (photos && photos.length > 0) {
-          // Send photos as media group with the post details as caption on first photo
+          // Send media as media group with the post details as caption on first item
           const mediaGroup = photos.map((photo, index) => ({
-            type: "photo",
+            type:
+              photo.file_type === "video"
+                ? "video"
+                : photo.file_type === "document"
+                ? "document"
+                : "photo",
             media: photo.telegram_file_id,
             caption: index === 0 ? message : undefined,
             parse_mode: index === 0 ? "HTML" : undefined,
@@ -258,17 +380,24 @@ module.exports = {
           await bot().sendMediaGroup(chatId, mediaGroup);
 
           // Send approval buttons as separate message
-          await bot().sendMessage(chatId, `📋 Post ID: ${post.id} - Actions:`, {
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: "✅ Approve", callback_data: `approve_${post.id}` },
-                  { text: "✏️ Edit", callback_data: `edit_${post.id}` },
+          const preposts = parseInt(process.env.PREPOSTS) || 0;
+          const displayId = post.id + preposts;
+
+          await bot().sendMessage(
+            chatId,
+            `📋 Post ID: ${displayId} - Actions:`,
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: "✅ Approve", callback_data: `approve_${post.id}` },
+                    { text: "✏️ Edit", callback_data: `edit_${post.id}` },
+                  ],
+                  [{ text: "❌ Reject", callback_data: `reject_${post.id}` }],
                 ],
-                [{ text: "❌ Reject", callback_data: `reject_${post.id}` }],
-              ],
-            },
-          });
+              },
+            }
+          );
         } else {
           // Send text-only message with inline buttons
           await bot().sendMessage(chatId, message, {
@@ -317,20 +446,7 @@ module.exports = {
         const post = await db.getPost(postId);
         await bot().sendMessage(
           post.telegram_id,
-          "🎉 ማስታወቂያዎ ጸድቆ ቻናላችን ላይ ተለቋል!\n\n" +
-            "ተጨማሪ ማስታወቂያ ለመልቀቀቅ ከዚህ በታች ያለውን ቁልፍ ይጫኑ:",
-          {
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  {
-                    text: "➕ አዲስ ማስታወቂያ ",
-                    callback_data: "add_new_ad",
-                  },
-                ],
-              ],
-            },
-          }
+          "🎉 ማስታወቂያዎ ጸድቆ ቻናላችን ላይ ተለቋል! ተጨማሪ ማስታወቂያዎችን ይልቀቁ።"
         );
 
         await bot().editMessageText(
@@ -409,7 +525,7 @@ module.exports = {
         chatId,
         `✏️ <b>Edit Post Mode</b>\n\n` +
           `📋 <b>Post:</b> ${post.title || "N/A"}\n` +
-          `🏠 <b>Type:</b> ${
+          `🛖 <b>Type:</b> ${
             post.property_type === "residential" ? "የመኖሪያ ቤት" : "የንግድ ቤት"
           }\n\n` +
           `What would you like to edit?`,
@@ -457,7 +573,7 @@ module.exports = {
       if (post.title === "ግቢ ውስጥ ያለ" && post.rooms_count) {
         propertySpecificFields.push([
           {
-            text: "🏠 Rooms Count",
+            text: "🛖 Rooms Count",
             callback_data: `edit_field_rooms_count_${postId}`,
           },
         ]);
@@ -552,6 +668,14 @@ module.exports = {
         },
       ]);
     }
+
+    // Add photos editing option
+    propertySpecificFields.push([
+      {
+        text: "📷 Media",
+        callback_data: `edit_field_photos_${postId}`,
+      },
+    ]);
 
     // Combine all fields
     const allFields = [
@@ -693,7 +817,7 @@ module.exports = {
       rooms_count: {
         displayName: "Rooms Count",
         currentValue: post.rooms_count || "N/A",
-        prompt: "🏠 Enter the number of rooms (numbers only):",
+        prompt: "🛖 Enter the number of rooms (numbers only):",
         dbField: "rooms_count",
       },
       villa_type: {
@@ -704,7 +828,7 @@ module.exports = {
         keyboard: {
           inline_keyboard: [
             [{ text: "🏡 ቪላ", callback_data: "villa_edit_ቪላ" }],
-            [{ text: "🏠 ጂ+1", callback_data: "villa_edit_ጂ+1" }],
+            [{ text: "🛖 ጂ+1", callback_data: "villa_edit_ጂ+1" }],
             [{ text: "🏢 ጂ+2", callback_data: "villa_edit_ጂ+2" }],
             [{ text: "🏢 ጂ+3", callback_data: "villa_edit_ጂ+3" }],
             [{ text: "🏗️ ሌላ", callback_data: "villa_edit_ሌላ" }],
@@ -756,6 +880,34 @@ module.exports = {
         prompt: "🔗 Enter the platform link (URL):",
         dbField: "platform_link",
       },
+      photos: {
+        displayName: "Photos",
+        currentValue: "Click to manage photos",
+        prompt: "📷 Photo Management:\n\nChoose how you want to handle photos:",
+        dbField: "photos",
+        keyboard: {
+          inline_keyboard: [
+            [
+              {
+                text: "➕ Add photos to existing ones",
+                callback_data: "admin_photo_add",
+              },
+            ],
+            [
+              {
+                text: "🔄 Replace all photos",
+                callback_data: "admin_photo_replace",
+              },
+            ],
+            [
+              {
+                text: "🗑️ Delete all photos",
+                callback_data: "admin_photo_delete",
+              },
+            ],
+          ],
+        },
+      },
     };
 
     return (
@@ -780,6 +932,14 @@ module.exports = {
       const field = state.editingField;
       const postId = state.postId;
       const post = state.post;
+
+      // Handle photos differently - photos now use buttons, not text input
+      if (field === "photos") {
+        return bot().sendMessage(
+          chatId,
+          "❌ Please use the photo management buttons above to edit photos."
+        );
+      }
 
       // Get field info for validation
       const fieldInfo = this.getFieldEditInfo(field, post);
@@ -866,7 +1026,7 @@ module.exports = {
         return { isValid: true, value: formattedFloor };
 
       case "price":
-        if (value.length < 3) {
+        if (value.length < 1) {
           return { isValid: false, error: "እባክዎ ዋጋውን በዝርዝር ያስገቡ:" };
         }
         return { isValid: true, value: value };
@@ -878,13 +1038,13 @@ module.exports = {
         return { isValid: true, value: value };
 
       case "title":
-        if (value.length < 2) {
+        if (value.length < 1) {
           return { isValid: false, error: "እባክዎ ትክክለኛ ርዕስ ያስገቡ:" };
         }
         return { isValid: true, value: value };
 
       case "location":
-        if (value.length < 2) {
+        if (value.length < 1) {
           return { isValid: false, error: "እባክዎ ትክክለኛ አድራሻ ያስገቡ:" };
         }
         return { isValid: true, value: value };
@@ -909,6 +1069,468 @@ module.exports = {
 
       default:
         return { isValid: true, value: value };
+    }
+  },
+
+  async handleAdminPhotoAdd(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+      const state = getState(chatId);
+
+      if (!state || !state.postId) {
+        return bot().answerCallbackQuery(callback.id, {
+          text: "❌ No post selected for editing!",
+        });
+      }
+
+      // Answer callback query first to prevent timeout
+      bot().answerCallbackQuery(callback.id);
+
+      const postId = state.postId;
+
+      // Set state for adding photos
+      setState(chatId, {
+        step: "admin_photo_upload",
+        postId: postId,
+        photoMode: "add",
+        photos: [],
+      });
+
+      // Get current photo count
+      const currentPhotos = await db.getPostPhotos(postId);
+
+      await bot().sendMessage(
+        chatId,
+        `📷 <b>Add Photos Mode</b>\n\n` +
+          `Current photos: ${currentPhotos.length}/8\n` +
+          `Available slots: ${8 - currentPhotos.length}\n\n` +
+          `Send photos to add them to the existing ones.`,
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ Done Adding Photos",
+                  callback_data: "admin_photos_done",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    } catch (error) {
+      console.error("Error in handleAdminPhotoAdd:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "Error!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  async handleAdminPhotoReplace(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+      const state = getState(chatId);
+
+      if (!state || !state.postId) {
+        return bot().answerCallbackQuery(callback.id, {
+          text: "❌ No post selected for editing!",
+        });
+      }
+
+      // Answer callback query first to prevent timeout
+      bot().answerCallbackQuery(callback.id);
+
+      const postId = state.postId;
+
+      // Delete all existing photos first
+      await db.deletePostPhotos(postId);
+
+      // Set state for replacing photos
+      setState(chatId, {
+        step: "admin_photo_upload",
+        postId: postId,
+        photoMode: "replace",
+        photos: [],
+      });
+
+      await bot().sendMessage(
+        chatId,
+        `🔄 <b>Replace Photos Mode</b>\n\n` +
+          `All existing photos have been deleted.\n` +
+          `Now send new photos (up to 8 photos).`,
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ Done Adding Photos",
+                  callback_data: "admin_photos_done",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    } catch (error) {
+      console.error("Error in handleAdminPhotoReplace:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "Error!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  async handleAdminPhotoDelete(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+      const state = getState(chatId);
+
+      if (!state || !state.postId) {
+        return bot().answerCallbackQuery(callback.id, {
+          text: "❌ No post selected for editing!",
+        });
+      }
+
+      // Answer callback query first to prevent timeout
+      bot().answerCallbackQuery(callback.id);
+
+      const postId = state.postId;
+
+      // Delete all photos
+      await db.deletePostPhotos(postId);
+
+      // Go back to edit options
+      const updatedPost = await db.getPost(postId);
+      const editOptions = this.getEditOptionsForPost(updatedPost, postId);
+
+      await bot().sendMessage(
+        chatId,
+        "✅ All photos have been deleted!\n\nWhat else would you like to edit?",
+        {
+          reply_markup: {
+            inline_keyboard: editOptions,
+          },
+        }
+      );
+
+      setState(chatId, { step: "admin_edit", postId, post: updatedPost });
+    } catch (error) {
+      console.error("Error in handleAdminPhotoDelete:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "Error!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  async handleAdminPhotosDone(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+      const state = getState(chatId);
+
+      if (!state || !state.postId) {
+        return bot().answerCallbackQuery(callback.id, {
+          text: "❌ No post selected for editing!",
+        });
+      }
+
+      // Answer callback query first to prevent timeout
+      bot().answerCallbackQuery(callback.id);
+
+      const postId = state.postId;
+      const photos = state.photos || [];
+
+      if (photos.length > 0) {
+        // Save all photos
+        for (const photo of photos) {
+          await db.saveAdminPostPhoto(postId, photo);
+        }
+
+        await bot().sendMessage(
+          chatId,
+          `✅ ${photos.length} photos have been saved successfully!`
+        );
+      }
+
+      // Go back to edit options
+      const updatedPost = await db.getPost(postId);
+      const editOptions = this.getEditOptionsForPost(updatedPost, postId);
+
+      await bot().sendMessage(
+        chatId,
+        "✅ Photo editing completed!\n\nWhat else would you like to edit?",
+        {
+          reply_markup: {
+            inline_keyboard: editOptions,
+          },
+        }
+      );
+
+      setState(chatId, { step: "admin_edit", postId, post: updatedPost });
+    } catch (error) {
+      console.error("Error in handleAdminPhotosDone:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "Error!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  async handleAdminPhotoUpload(msg) {
+    try {
+      const chatId = msg.chat.id;
+      const state = getState(chatId);
+
+      if (!state || state.step !== "admin_photo_upload" || !state.postId) {
+        return;
+      }
+
+      let photos = state.photos || [];
+      let newPhoto = null;
+
+      // Handle regular photo
+      if (msg.photo) {
+        newPhoto = {
+          file_id: msg.photo[msg.photo.length - 1].file_id,
+          file_size: msg.photo[msg.photo.length - 1].file_size,
+          type: "photo",
+        };
+      }
+      // Handle document/image
+      else if (
+        msg.document &&
+        msg.document.mime_type &&
+        msg.document.mime_type.startsWith("image/")
+      ) {
+        newPhoto = {
+          file_id: msg.document.file_id,
+          file_size: msg.document.file_size,
+          type: "document",
+        };
+      }
+      // Handle video
+      else if (msg.video) {
+        // Check file size limit (50MB)
+        if (msg.video.file_size > 50 * 1024 * 1024) {
+          return bot().sendMessage(
+            chatId,
+            "❌ Video is over 50MB. Please send a smaller video."
+          );
+        }
+        newPhoto = {
+          file_id: msg.video.file_id,
+          file_size: msg.video.file_size,
+          type: "video",
+        };
+      }
+
+      if (!newPhoto) {
+        return bot().sendMessage(
+          chatId,
+          "❌ Please send a valid photo or video."
+        );
+      }
+
+      // Get current saved photos count (for add mode)
+      let currentSavedCount = 0;
+      if (state.photoMode === "add") {
+        const currentSavedPhotos = await db.getPostPhotos(state.postId);
+        currentSavedCount = currentSavedPhotos.length;
+      }
+
+      const totalWillHave = currentSavedCount + photos.length + 1;
+
+      // Check if adding this photo would exceed the limit
+      if (totalWillHave > 8) {
+        return bot().sendMessage(
+          chatId,
+          `❌ Cannot add more photos. This would make ${totalWillHave} photos total, but maximum is 8.\n\n` +
+            `Current saved: ${currentSavedCount}\n` +
+            `In queue: ${photos.length}\n` +
+            `Please click 'Done' to save current photos or start over.`
+        );
+      }
+
+      // Add the photo to the queue
+      photos.push(newPhoto);
+      setState(chatId, { ...state, photos });
+
+      // Send confirmation
+      await bot().sendMessage(
+        chatId,
+        `✅ Photo ${photos.length} added to queue!\n\n` +
+          `Total will be: ${currentSavedCount + photos.length}/8\n\n` +
+          `${
+            currentSavedCount + photos.length < 8
+              ? "Send more photos or click 'Done' when finished."
+              : "Maximum reached! Click 'Done' to save all photos."
+          }`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ Done Adding Photos",
+                  callback_data: "admin_photos_done",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    } catch (error) {
+      console.error("Error in handleAdminPhotoUpload:", error);
+      bot().sendMessage(
+        chatId,
+        "❌ Error handling photo upload. Please try again."
+      );
+    }
+  },
+
+  async handleAdminMediaGroupPhoto(msg) {
+    const chatId = msg.chat.id;
+    try {
+      const {
+        addToMediaGroup,
+        getMediaGroup,
+        clearMediaGroup,
+      } = require("../services/botService");
+      const mediaGroupId = msg.media_group_id;
+
+      // Add photo/video to media group collection
+      let newPhoto = null;
+      if (msg.photo) {
+        newPhoto = {
+          file_id: msg.photo[msg.photo.length - 1].file_id,
+          file_size: msg.photo[msg.photo.length - 1].file_size,
+          type: "photo",
+        };
+        addToMediaGroup(mediaGroupId, newPhoto);
+      } else if (msg.video && msg.video.file_size <= 50 * 1024 * 1024) {
+        newPhoto = {
+          file_id: msg.video.file_id,
+          file_size: msg.video.file_size,
+          type: "video",
+        };
+        addToMediaGroup(mediaGroupId, newPhoto);
+      }
+
+      // Set a timeout to process the complete media group
+      // This gives time for all photos in the group to arrive
+      setTimeout(async () => {
+        try {
+          const state = getState(chatId);
+          let photos = state.photos || [];
+
+          // Check if this media group has already been processed
+          const mediaGroupData =
+            require("../services/botService").mediaGroups?.get(mediaGroupId);
+          if (!mediaGroupData || mediaGroupData.processed) return;
+
+          // Mark as processed to prevent duplicate confirmations
+          mediaGroupData.processed = true;
+
+          const mediaGroupPhotos = getMediaGroup(mediaGroupId);
+          if (mediaGroupPhotos.length === 0) return;
+
+          // Get current saved photos count (for add mode)
+          let currentSavedCount = 0;
+          if (state.photoMode === "add") {
+            const currentSavedPhotos = await db.getPostPhotos(state.postId);
+            currentSavedCount = currentSavedPhotos.length;
+          }
+
+          // Calculate how many photos we can add
+          const maxCanAdd = 8 - currentSavedCount - photos.length;
+          const totalPhotosToAdd = Math.min(mediaGroupPhotos.length, maxCanAdd);
+
+          if (totalPhotosToAdd <= 0) {
+            await bot().sendMessage(
+              chatId,
+              `❌ Cannot add more photos. Maximum is 8 total.\n\n` +
+                `Current saved: ${currentSavedCount}\n` +
+                `In queue: ${photos.length}\n` +
+                `Please click 'Done' to save current photos.`
+            );
+            clearMediaGroup(mediaGroupId);
+            return;
+          }
+
+          const newPhotos = mediaGroupPhotos.slice(0, totalPhotosToAdd);
+          photos = [...photos, ...newPhotos];
+
+          // Clear the media group from memory
+          clearMediaGroup(mediaGroupId);
+
+          // Update state
+          setState(chatId, { ...state, photos });
+
+          const totalWillHave = currentSavedCount + photos.length;
+
+          // Send single confirmation message
+          if (totalWillHave >= 8) {
+            await bot().sendMessage(
+              chatId,
+              `✅ ${newPhotos.length} photos added!${
+                mediaGroupPhotos.length > totalPhotosToAdd
+                  ? ` (Maximum reached, took first ${totalPhotosToAdd} of ${mediaGroupPhotos.length})`
+                  : ""
+              }\n\n` +
+                `Total will be: 8/8\n\n` +
+                `Maximum reached! Click 'Done' to save all photos.`,
+              {
+                reply_markup: {
+                  inline_keyboard: [
+                    [
+                      {
+                        text: "✅ Done Adding Photos",
+                        callback_data: "admin_photos_done",
+                      },
+                    ],
+                  ],
+                },
+              }
+            );
+          } else {
+            await bot().sendMessage(
+              chatId,
+              `✅ ${newPhotos.length} photos added! Total will be: ${totalWillHave}/8\n\n` +
+                `${
+                  totalWillHave < 8
+                    ? "Send more photos or click 'Done' when finished."
+                    : "Maximum reached! Click 'Done' to save all photos."
+                }`,
+              {
+                reply_markup: {
+                  inline_keyboard: [
+                    [
+                      {
+                        text: "✅ Done Adding Photos",
+                        callback_data: "admin_photos_done",
+                      },
+                    ],
+                  ],
+                },
+              }
+            );
+          }
+        } catch (error) {
+          console.error("Error processing admin media group:", error);
+        }
+      }, 1000); // Wait 1 second for all photos in group to arrive
+    } catch (error) {
+      console.error("Error in handleAdminMediaGroupPhoto:", error);
+      bot().sendMessage(
+        chatId,
+        "❌ Error handling photo group. Please try again."
+      );
     }
   },
 
@@ -952,6 +1574,46 @@ module.exports = {
     }
   },
 
+  async handleAdminSkipPlatformLink(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+      const state = getState(chatId);
+
+      if (!(await isAdmin(chatId))) {
+        return bot().answerCallbackQuery(callback.id, {
+          text: "Access denied!",
+        });
+      }
+
+      // Answer callback query first to prevent timeout
+      bot().answerCallbackQuery(callback.id);
+
+      setState(chatId, {
+        step: null,
+        admin_display_name: state.admin_display_name,
+        admin_contact_info: state.admin_contact_info,
+        admin_platform_link: null,
+        admin_platform_name: null,
+      });
+
+      await bot().sendMessage(
+        chatId,
+        "✅ መረጃዎች ተቀምጠዋል!\n\n" + "አሁን ለማስታወቂያ ፍሰት ይመራሉ..."
+      );
+
+      // Start the normal posting flow
+      const postController = require("./postController");
+      await postController.askPropertyType(chatId);
+    } catch (error) {
+      console.error("Error in handleAdminSkipPlatformLink:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "Error!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
   async handleAdminCreatePost(callback) {
     try {
       const chatId = callback.message.chat.id;
@@ -988,8 +1650,17 @@ module.exports = {
       const chatId = msg.chat.id;
       const state = getState(chatId);
 
-      if (!state || !state.step.startsWith("admin_post_")) {
+      if (
+        !state ||
+        (!state.step.startsWith("admin_post_") &&
+          state.step !== "admin_photo_upload")
+      ) {
         return;
+      }
+
+      // Handle admin photo uploads
+      if (state.step === "admin_photo_upload") {
+        return this.handleAdminPhotoUpload(msg);
       }
 
       if (state.step === "admin_post_name") {
@@ -1012,9 +1683,92 @@ module.exports = {
         }
 
         setState(chatId, {
-          step: null,
+          step: "admin_post_platform_link",
           admin_display_name: state.admin_display_name,
           admin_contact_info: msg.text.trim(),
+        });
+
+        await bot().sendMessage(
+          chatId,
+          "🔗 ቤቱን በሌላ ቦታ አስተዋውቀዋል?\n\n" +
+            "ቤቱ በ Facebook, TikTok, Jiji, YouTube ወይም ሌላ ቦታ ከተለጠፈ ሊንኩን እዚህ ያስገቡ።\n\n" +
+            "ካልተለጠፈ 'ዝለል' ብለው ይጻፉ:",
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "⏭️ ሌላ ቦታ አለጠፍኩም",
+                    callback_data: "admin_skip_platform_link",
+                  },
+                ],
+              ],
+            },
+          }
+        );
+      } else if (state.step === "admin_post_platform_link") {
+        let platformLink = null;
+        let platformName = null;
+
+        if (
+          msg.text &&
+          msg.text.trim() &&
+          msg.text.trim().toLowerCase() !== "ዝለል"
+        ) {
+          const link = msg.text.trim();
+
+          // Validate URL
+          let validatedLink = link;
+          try {
+            new URL(link);
+          } catch (e) {
+            // Try with http:// prefix if no protocol is provided
+            try {
+              new URL(`http://${link}`);
+              validatedLink = `http://${link}`;
+            } catch (e2) {
+              return bot().sendMessage(
+                chatId,
+                "❌ እባክዎ ትክክለኛ ሊንክ ያስገቡ (https://example.com):\n\nወይም መስገባት ካልፈለጉ 'ዝለል' ብለው ይጻፉ"
+              );
+            }
+          }
+
+          // Detect platform
+          platformName = "ሌላ";
+          if (
+            validatedLink.includes("facebook.com") ||
+            validatedLink.includes("fb.com")
+          ) {
+            platformName = "Facebook";
+          } else if (validatedLink.includes("tiktok.com")) {
+            platformName = "TikTok";
+          } else if (validatedLink.includes("jiji.")) {
+            platformName = "Jiji";
+          } else if (
+            validatedLink.includes("youtube.com") ||
+            validatedLink.includes("youtu.be")
+          ) {
+            platformName = "YouTube";
+          } else if (validatedLink.includes("instagram.com")) {
+            platformName = "Instagram";
+          } else if (
+            validatedLink.includes("t.me") ||
+            validatedLink.includes("telegram.me")
+          ) {
+            platformName = "Telegram";
+          }
+
+          platformLink = validatedLink;
+          await bot().sendMessage(chatId, `✅ የ ${platformName} ሊንክ ተቀምጧል!`);
+        }
+
+        setState(chatId, {
+          step: null,
+          admin_display_name: state.admin_display_name,
+          admin_contact_info: state.admin_contact_info,
+          admin_platform_link: platformLink,
+          admin_platform_name: platformName,
         });
 
         await bot().sendMessage(

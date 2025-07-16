@@ -7,6 +7,9 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "setup-admin": "node scripts/setup-admin.js",
+    "manage-admins": "node scripts/manage-admins.js",
+    "fix-admin-ids": "node scripts/fix-admin-ids.js",
+    "clean-db": "node scripts/clean-database.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [

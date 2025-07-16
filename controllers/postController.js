@@ -13,18 +13,105 @@ const channelService = require("../services/channelService");
 // Function to get bot instance
 const bot = () => getBot();
 
-// Helper function for notifying admins
+// Helper function for notifying admins with post and action buttons
 async function notifyAdminsNewPost(chatId) {
   try {
-    const user = await db.getUser(chatId);
-    const message =
-      `🔔 <b>አዲስ ማስታወቂያ</b>\n\n` +
-      `<b>ተጠቃሚ:</b> ${user.name}\n` +
-      `<b>ስልክ:</b> ${user.phone}\n` +
-      `<b>ቴሌግራም መለያ:</b> ${chatId}\n\n` +
-      `በመጠባበቅ ላይ ያሉ ማስታወቂያዎችን /admin ብለው ያግኙ።`;
+    // Get the latest pending post for this user
+    const posts = await db.getPendingPostsForUser(chatId);
+    if (!posts || posts.length === 0) {
+      console.error("No pending posts found for user:", chatId);
+      return;
+    }
 
-    await channelService.notifyAdmins(null, message);
+    const post = posts[0]; // Get the latest post
+    const adminController = require("./adminController");
+
+    // Format post for admin review using existing function
+    const message = adminController.formatPostForAdmin(post);
+
+    // Get admin users
+    const admins = await db.getAdmins();
+
+    for (const admin of admins) {
+      try {
+        // Get photos for this post
+        const photos = await db.getPostPhotos(post.id);
+
+        if (photos && photos.length > 0) {
+          // Send media as media group with the post details as caption on first item
+          const mediaGroup = photos.map((photo, index) => ({
+            type:
+              photo.file_type === "video"
+                ? "video"
+                : photo.file_type === "document"
+                ? "document"
+                : "photo",
+            media: photo.telegram_file_id,
+            caption: index === 0 ? message : undefined,
+            parse_mode: index === 0 ? "HTML" : undefined,
+          }));
+
+          await bot().sendMediaGroup(admin.telegram_id, mediaGroup);
+
+          // Send approval buttons as separate message
+          const preposts = parseInt(process.env.PREPOSTS) || 0;
+          const displayId = post.id + preposts;
+
+          await bot().sendMessage(
+            admin.telegram_id,
+            `📋 Post ID: ${displayId} - Actions:`,
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: "✅ Approve", callback_data: `approve_${post.id}` },
+                    { text: "✏️ Edit", callback_data: `edit_${post.id}` },
+                  ],
+                  [{ text: "❌ Reject", callback_data: `reject_${post.id}` }],
+                ],
+              },
+            }
+          );
+        } else {
+          // Send text-only message with inline buttons
+          await bot().sendMessage(admin.telegram_id, message, {
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: "✅ Approve", callback_data: `approve_${post.id}` },
+                  { text: "✏️ Edit", callback_data: `edit_${post.id}` },
+                ],
+                [{ text: "❌ Reject", callback_data: `reject_${post.id}` }],
+              ],
+            },
+          });
+        }
+
+        console.log(
+          `✅ Admin ${admin.telegram_id} notified with post ID ${post.id}`
+        );
+      } catch (error) {
+        console.error(
+          `Failed to notify admin ${admin.telegram_id}:`,
+          error.message
+        );
+
+        // Check if it's a "chat not found" error and handle it
+        if (
+          error.response &&
+          error.response.body &&
+          (error.response.body.description?.includes("chat not found") ||
+            error.response.body.description?.includes("user not found") ||
+            error.response.body.description?.includes("bot was blocked"))
+        ) {
+          console.warn(
+            `⚠️ Admin ${admin.telegram_id} chat not accessible - marking as invalid`
+          );
+          await db.markAdminAsInactive(admin.telegram_id);
+        }
+      }
+    }
   } catch (error) {
     console.error("Error notifying admins:", error);
   }
@@ -100,7 +187,7 @@ module.exports = {
           [{ text: "ለየትኛውም ንግድ", callback_data: "title_ለየትኛውም ንግድ" }],
         ];
       } else {
-        message = "🏠 የመኖሪያ ቤትዎ ምን ዓይነት ነው?";
+        message = "🛖 የመኖሪያ ቤትዎ ምን ዓይነት ነው?";
         keyboard = [
           [{ text: "ኮንዶሚንየም", callback_data: "title_ኮንዶሚንየም" }],
           [{ text: "አፓርታማ", callback_data: "title_አፓርታማ" }],
@@ -134,7 +221,7 @@ module.exports = {
       // Handle special cases
       if (title === "ግቢ ውስጥ ያለ") {
         setState(chatId, { step: "get_rooms_count" });
-        await bot().sendMessage(chatId, "ስንት ክፍል አለው? ቁጥር ብቻ ያስገቡ:");
+        await bot().sendMessage(chatId, "ስንት ክፍል ነው? ቁጥር ብቻ ያስገቡ:");
       } else if (title === "ሙሉ ግቢ") {
         setState(chatId, { step: "get_villa_type" });
         await bot().sendMessage(chatId, "🏡 ምን ዓይነት ሙሉ ግቢ ነው?", {
@@ -209,7 +296,7 @@ module.exports = {
   async handleVillaTypeOther(msg) {
     const chatId = msg.chat.id;
     try {
-      if (!msg.text || msg.text.length < 2) {
+      if (!msg.text || msg.text.length < 1) {
         return bot().sendMessage(chatId, "❌ እባክዎ የቪላ ዓይነቱን ይግለጹ:");
       }
 
@@ -352,7 +439,32 @@ module.exports = {
   async askPropertySize(chatId) {
     try {
       setState(chatId, { step: "get_property_size" });
-      await bot().sendMessage(chatId, "📐 የቤቱ ስፋት ስንት ነው?(በካሬ) ቁጥር ብቻ ያስገቡ፡");
+
+      const state = getState(chatId);
+      const propertyTitle = state.property_title;
+
+      // For studio, ግቢ ውስጥ ያለ, and ሙሉ ግቢ - make size optional
+      if (["ስቱዲዮ", "ግቢ ውስጥ ያለ", "ሙሉ ግቢ"].includes(propertyTitle)) {
+        await bot().sendMessage(
+          chatId,
+          "📐 የቤቱ ስፋት ስንት ነው?(በካሬ) ቁጥር ብቻ ያስገቡ፡\n\n" +
+            "ስፋቱን አያውቁም ወይም መዝለል ይፈልጋሉ? ከታች ያለውን ይጫኑ!",
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "⏭️ ስፋቱን  ይዝለሉ",
+                    callback_data: "skip_property_size",
+                  },
+                ],
+              ],
+            },
+          }
+        );
+      } else {
+        await bot().sendMessage(chatId, "📐 የቤቱ ስፋት ስንት ነው?(በካሬ) ቁጥር ብቻ ያስገቡ፡");
+      }
     } catch (error) {
       console.error("Error in askPropertySize:", error);
       bot().sendMessage(chatId, "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ።");
@@ -375,12 +487,22 @@ module.exports = {
     }
   },
 
+  async skipPropertySize(chatId) {
+    try {
+      await this.askMainLocation(chatId);
+    } catch (error) {
+      console.error("Error in skipPropertySize:", error);
+      bot().sendMessage(chatId, "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ።");
+    }
+  },
+
   async askMainLocation(chatId) {
     try {
       setState(chatId, { step: "get_main_location" });
       await bot().sendMessage(
         chatId,
-        "ዋና ሰፈሩ የት ነው?\n\n" + "እባክዎ ዋና ሰፈሩን ብቻ ያስገቡ (ምሳሌ: መገናኛ, ሰሚት, ቦሌ, ፒያሳ):",
+        "ዋና ሰፈሩ የት ነው?\n\n" +
+          "እባክዎ ዋና ሰፈሩን ብቻ ያስገቡ (ምሳሌ: መገናኛ, ሰሚት, ቦሌ, ፒያሳ ....):",
         {
           reply_markup: {
             remove_keyboard: true,
@@ -396,7 +518,7 @@ module.exports = {
   async handleMainLocationInput(msg) {
     const chatId = msg.chat.id;
     try {
-      if (!msg.text || msg.text.length < 2) {
+      if (!msg.text || msg.text.length < 1) {
         return bot().sendMessage(chatId, "❌ እባክዎ ትክክለኛ ዋና ሰፈር ያስገቡ:");
       }
 
@@ -425,7 +547,7 @@ module.exports = {
   async handleAreaLocationInput(msg) {
     const chatId = msg.chat.id;
     try {
-      if (!msg.text || msg.text.length < 3) {
+      if (!msg.text || msg.text.length < 1) {
         return bot().sendMessage(chatId, "❌ እባክዎ የአከባቢውን መግለጫ ያስገቡ:");
       }
 
@@ -644,18 +766,15 @@ module.exports = {
     const chatId = msg.chat.id;
     try {
       if (!msg.text || msg.text.trim().toLowerCase() === "ሃሳፍ") {
-        return this.askPlatformLink(chatId);
+        return this.askForPhotoOption(chatId);
       }
 
-      if (msg.text.length < 5) {
-        return bot().sendMessage(
-          chatId,
-          "❌ እባክዎ ስለ ንብረቱ ዝርዝር መግለጫ ያስገቡ (ቢያንስ 5 ፊደል)፡"
-        );
+      if (msg.text.length < 1) {
+        return bot().sendMessage(chatId, "❌ እባክዎ ስለ ንብረቱ ዝርዝር መግለጫ ያስገቡ፡");
       }
 
       await db.updatePost(chatId, { description: msg.text.trim() });
-      await this.askPlatformLink(chatId);
+      await this.askForPhotoOption(chatId);
     } catch (error) {
       console.error("Error in handleDescriptionInput:", error);
       bot().sendMessage(chatId, "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ።");
@@ -664,7 +783,7 @@ module.exports = {
 
   async skipDescription(chatId) {
     try {
-      await this.askPlatformLink(chatId);
+      await this.askForPhotoOption(chatId);
     } catch (error) {
       console.error("Error in skipDescription:", error);
       bot().sendMessage(chatId, "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ።");
@@ -782,17 +901,17 @@ module.exports = {
 
       await bot().sendMessage(
         chatId,
-        "📸 ቤቱን ፎቶዎች ማስገባት ይፈልጋሉ?\n" + "(እስከ 8 ፎቶዎች ድረስ መጨመር ይችላሉ)",
+        "📸 የቤቱን ፎቶዎች ወይም ቪዲዮዎች ማስገባት ይፈልጋሉ?\n" + "(እስከ 8 ሚድያ ድረስ መጨመር ይችላሉ)",
         {
           reply_markup: {
             inline_keyboard: [
               [
                 {
-                  text: "📸 አዎ፣ ፎቶዎችን መጨመር እፈልጋለሁ",
+                  text: "📸 አዎ፣ ሚድያ መጨመር እፈልጋለሁ",
                   callback_data: "add_photos",
                 },
               ],
-              [{ text: "⏭️ አይ፣፣ ፎቶዎች የሉኝም", callback_data: "skip_photos" }],
+              [{ text: "⏭️ አይ፣ ሚድያ የሉኝም", callback_data: "skip_photos" }],
             ],
           },
         }
@@ -809,11 +928,12 @@ module.exports = {
 
       await bot().sendMessage(
         chatId,
-        "📷 እባክዎ የቤቱን ፎቶዎች ይላኩ\n\n" +
+        "📷 እባክዎ የቤቱን ሚድያ (ፎቶዎች/ቪዲዮዎች) ይላኩ\n\n" +
           "📝 መመሪያዎች:\n" +
-          "• እስከ 8 ፎቶዎች ድረስ መላክ ይችላሉ\n" +
-          "• ፎቶዎች ጥራታቸው ጥሩ እንዲሆን ያድርጉ\n" +
-          "• ፎቶዎችን አንድ በአንድ ወይም በአንድ ጊዜ መላክ ይችላሉ\n" +
+          "• እስከ 8 ሚድያ ድረስ መላክ ይችላሉ\n" +
+          "• ሚድያዎች ጥራታቸው ጥሩ እንዲሆን ያድርጉ\n" +
+          "• ቪዲዮዎች እስከ 50MB ድረስ ሊሆኑ ይችላሉ\n" +
+          "• ሚድያዎችን አንድ በአንድ ወይም በአንድ ጊዜ መላክ ይችላሉ\n" +
           "• ጨርሰው ሲጨርሱ 'ጨርሻለሁ' የሚለውን ቁልፍ ይጫኑ",
         {
           reply_markup: {
@@ -858,16 +978,31 @@ module.exports = {
           type: "document",
         };
       }
+      // Handle video
+      else if (msg.video) {
+        // Check file size limit (50MB)
+        if (msg.video.file_size > 50 * 1024 * 1024) {
+          return bot().sendMessage(
+            chatId,
+            "❌ ቪዲዮው ከ50MB በላይ ነው። እባክዎ ትንሽ ቪዲዮ ይላኩ።"
+          );
+        }
+        newPhoto = {
+          file_id: msg.video.file_id,
+          file_size: msg.video.file_size,
+          type: "video",
+        };
+      }
 
       if (!newPhoto) {
-        return bot().sendMessage(chatId, "❌ እባክዎ ትክክለኛ ፎቶ ይላኩ።");
+        return bot().sendMessage(chatId, "❌ እባክዎ ትክክለኛ ፎቶ ወይም ቪዲዮ ይላኩ።");
       }
 
       // Check if adding this photo would exceed the limit
       if (photos.length >= 8) {
         return bot().sendMessage(
           chatId,
-          "❌ አስቀድመው 8 ፎቶዎች አሉ። ተጨማሪ ፎቶዎች መጨመር አይችሉም። እባክዎ 'ፎቶዎች ጨርሻለሁ' ይጫኑ።"
+          "❌ አስቀድመው 8 ሚድያ አሉ። ተጨማሪ ሚድያ መጨመር አይችሉም። እባክዎ 'ሚድያ ጨርሻለሁ' ይጫኑ።"
         );
       }
 
@@ -881,7 +1016,7 @@ module.exports = {
 
         return bot().sendMessage(
           chatId,
-          `✅ ፎቶዎች 8/8 ተቀምጠዋል (ከ8 በላይ ስለላኩ የመጀመሪያውን 8 እንወስዳለን)\n\n`,
+          `✅ ሚድያ 8/8 ተቀምጠዋል (ከ8 በላይ ስለላኩ የመጀመሪያውን 8 እንወስዳለን)\n\n`,
           {
             reply_markup: {
               inline_keyboard: [
@@ -896,11 +1031,11 @@ module.exports = {
 
       await bot().sendMessage(
         chatId,
-        `✅ ፎቶ ${photos.length}/8 ተቀምጧል\n\n` +
+        `✅ ሚድያ ${photos.length}/8 ተቀምጧል\n\n` +
           `${
             photos.length < 8
-              ? "📷 ተጨማሪ ፎቶዎች መላክ ይችላሉ ወይም ቁልፉን ይጫኑ።"
-              : "✅ 8 ፎቶዎች አስገብተዋል፣ እባክዎ ጨርሻለሁ ይጫኑ።"
+              ? "📷 ተጨማሪ ሚድያ መላክ ይችላሉ ወይም ቁልፉን ይጫኑ።"
+              : "✅ 8 ሚድያ አስገብተዋል፣ እባክዎ ጨርሻለሁ ይጫኑ።"
           }`,
         {
           reply_markup: {
@@ -934,7 +1069,7 @@ module.exports = {
         // Save photos to database
         await db.savePostPhotos(chatId, photos);
 
-        await bot().sendMessage(chatId, `✅ ${photos.length} ፎቶዎችዎ ተቀምጠዋል!`);
+        await bot().sendMessage(chatId, `✅ ${photos.length} ሚድያዎችዎ ተቀምጠዋል!`);
       }
 
       await this.completeListing(chatId);
@@ -966,28 +1101,88 @@ module.exports = {
       // Use the same formatting as channel posts for preview
       const previewMessage = channelService.formatPostForPreview(post);
 
-      await bot().sendMessage(
-        chatId,
+      // Get the latest pending post for this user to get postId
+      const latestPost = await db.getLatestPendingPost(chatId);
+      const postId = latestPost ? latestPost.id : null;
+
+      // Get photos for this post
+      const photos = await db.getPostPhotos(post.id);
+
+      const previewText =
         "📋 <b>የማስታወቂያዎ ቅድመ ዕይታ:</b>\n\n" +
-          "ከዚህ በታች ማስታወቂያዎ በቻናላችን ላይ እንዴት እንደሚታይ ይመልከቱ:\n\n" +
-          "──────────────────\n\n" +
-          previewMessage +
-          "\n\n──────────────────",
-        {
+        "ከዚህ በታች ማስታወቂያዎ በቻናላችን ላይ እንዴት እንደሚታይ ይመልከቱ:\n\n" +
+        "──────────────────\n\n" +
+        previewMessage +
+        "\n\n──────────────────";
+
+      const inlineKeyboard = [
+        [{ text: "✅ ይህ ይበቃኛል", callback_data: "confirm_listing" }],
+        [
+          { text: "✏️ ማረም", callback_data: `user_edit_${postId}` },
+          { text: "🔄 እንደ አዲስ ጀመር", callback_data: "start_new_listing" },
+        ],
+      ];
+
+      if (photos && photos.length > 0) {
+        if (photos.length === 1) {
+          // Single media: Send using appropriate method based on file type
+          const media = photos[0];
+          if (media.file_type === "video") {
+            await bot().sendVideo(chatId, media.telegram_file_id, {
+              caption: previewText,
+              parse_mode: "HTML",
+              reply_markup: {
+                inline_keyboard: inlineKeyboard,
+              },
+            });
+          } else {
+            // Photos and documents
+            await bot().sendPhoto(chatId, media.telegram_file_id, {
+              caption: previewText,
+              parse_mode: "HTML",
+              reply_markup: {
+                inline_keyboard: inlineKeyboard,
+              },
+            });
+          }
+        } else {
+          // Multiple media: Send as media group with preview text on first item
+          const mediaGroup = photos.map((photo, index) => ({
+            type:
+              photo.file_type === "video"
+                ? "video"
+                : photo.file_type === "document"
+                ? "document"
+                : "photo",
+            media: photo.telegram_file_id,
+            caption: index === 0 ? previewText : undefined,
+            parse_mode: index === 0 ? "HTML" : undefined,
+          }));
+
+          await bot().sendMediaGroup(chatId, mediaGroup);
+
+          // Send action buttons as separate message
+          await bot().sendMessage(chatId, "📋 የማስታወቂያ እርምጃዎች:", {
+            reply_markup: {
+              inline_keyboard: inlineKeyboard,
+            },
+          });
+        }
+      } else {
+        // No photos: Send text-only message
+        await bot().sendMessage(chatId, previewText, {
           parse_mode: "HTML",
           reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "✅ ይህ ይበቃኛል", callback_data: "confirm_listing" },
-                { text: "🔄 እንደ አዲስ ጀመር", callback_data: "start_new_listing" },
-              ],
-            ],
+            inline_keyboard: inlineKeyboard,
           },
-        }
-      );
+        });
+      }
     } catch (error) {
       console.error("Error showing preview:", error);
-      bot().sendMessage(chatId, "❌ ቅድመ ዕይታ ማሳየት አልተቻለም፣፣ እባክዎ እንደገና ይሞክሩ።");
+      bot().sendMessage(
+        chatId,
+        "❌ ቅድመ ዕይታ ማሳየት አልተቻለም፣ እባክዎ /start በመጫን እንደገና ይሞክሩ።"
+      );
     }
   },
 
@@ -996,11 +1191,19 @@ module.exports = {
       // Check if this is an admin posting with custom info
       const state = getState(chatId);
       if (state?.admin_display_name && state?.admin_contact_info) {
-        // Use admin-provided contact info
-        await db.updatePost(chatId, {
+        // Use admin-provided contact info and platform link
+        const updateData = {
           contact_info: state.admin_contact_info,
           display_name: state.admin_display_name,
-        });
+        };
+
+        // Add platform link if provided by admin
+        if (state.admin_platform_link) {
+          updateData.platform_link = state.admin_platform_link;
+          updateData.platform_name = state.admin_platform_name;
+        }
+
+        await db.updatePost(chatId, updateData);
       } else {
         // Automatically save user's registered phone and name to the post
         const user = await db.getUser(chatId);
@@ -1019,20 +1222,17 @@ module.exports = {
         "✅ ማስታወቂያዎ ደርሶናል!\n\n" +
           "አስተዳዳሪዎች ማስታወቂያዎን በቅርቡ ይመለከቱታል።\n" +
           "ከተፈቀደ በኋላ፣ ወደ ቻናላችን ይለቀቃል።\n\n" +
-          "ቤት ቦትን ስለተጠቀሙ እናመሰግናለን!",
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                {
-                  text: "🔄 አዲስ ማስታወቂያ ለመልቀቅ፣ ይህን ይጫኑ",
-                  callback_data: "start_new_listing",
-                },
-              ],
-            ],
-          },
-        }
+          "ቤት ቦትን ስለተጠቀሙ እናመሰግናለን!"
       );
+
+      // Return to main menu after post submission
+      setTimeout(async () => {
+        try {
+          await require("../controllers/userController").showMainMenu(chatId);
+        } catch (error) {
+          console.error("Error returning to main menu:", error);
+        }
+      }, 2000);
 
       // Notify admins
       notifyAdminsNewPost(chatId);
@@ -1042,68 +1242,921 @@ module.exports = {
     }
   },
 
-  async showEditOptions(chatId) {
+  // NEW User Editing System - Exactly like Admin System
+  async handleUserEditPost(callback) {
     try {
+      const chatId = callback.message.chat.id;
+      const postId = callback.data.split("_")[2];
+
+      // Answer callback query first to prevent timeout
+      bot().answerCallbackQuery(callback.id);
+
+      // Get post details to determine property type and available fields
+      const post = await db.getPost(parseInt(postId));
+
+      if (!post) {
+        return bot().sendMessage(chatId, "❌ ማስታወቂያ አልተገኘም!");
+      }
+
+      setState(chatId, {
+        step: "user_edit",
+        postId: parseInt(postId),
+        post: post,
+      });
+
+      // Create property-type-aware edit options
+      const editOptions = this.getUserEditOptionsForPost(post, postId);
+
+      await bot().sendMessage(
+        chatId,
+        `✏️ <b>የማስታወቂያ ማረሚያ</b>\n\n` +
+          `📋 <b>ማስታወቂያ:</b> ${post.title || "N/A"}\n` +
+          `🛖 <b>ዓይነት:</b> ${
+            post.property_type === "residential" ? "የመኖሪያ ቤት" : "የንግድ ቤት"
+          }\n\n` +
+          `ምን መርመም ይፈልጋሉ?`,
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: editOptions,
+          },
+        }
+      );
+    } catch (error) {
+      console.error("Error in handleUserEditPost:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "ስህተት!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  // User Photo Editing System - Same as Admin but for Users
+  async handleUserPhotoAdd(callback) {
+    try {
+      const chatId = callback.message.chat.id;
       const state = getState(chatId);
+
+      if (!state || !state.postId) {
+        return bot().answerCallbackQuery(callback.id, {
+          text: "❌ ለማረምየተመረጠ ማስታወቂያ የለም!",
+        });
+      }
+
+      // Answer callback query first to prevent timeout
+      bot().answerCallbackQuery(callback.id);
+
       const postId = state.postId;
 
-      await bot().sendMessage(chatId, "✏️ ምን መርመም ይፈልጋሉ?", {
-        reply_markup: {
+      // Set state for adding photos
+      setState(chatId, {
+        step: "user_photo_upload",
+        postId: postId,
+        photoMode: "add",
+        photos: [],
+      });
+
+      // Get current photo count
+      const currentPhotos = await db.getPostPhotos(postId);
+
+      await bot().sendMessage(
+        chatId,
+        `📷 <b>ሚድያ መጨመሪያ ሁኔታ</b>\n\n` +
+          `አሁን ያሉ ሚድያ: ${currentPhotos.length}/8\n` +
+          `የተጨመሩ በሰላ: 0\n` +
+          `ሚድያዎችን ይላኩ ከነባሩ ሚድያ ጋር ለመጨመር።`,
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ ሚድያ መጨመር ጨርሻለሁ",
+                  callback_data: "user_photos_done",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    } catch (error) {
+      console.error("Error in handleUserPhotoAdd:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "ስህተት!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  async handleUserPhotoReplace(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+      const state = getState(chatId);
+
+      if (!state || !state.postId) {
+        return bot().answerCallbackQuery(callback.id, {
+          text: "❌ ለማረምየተመረጠ ማስታወቂያ የለም!",
+        });
+      }
+
+      // Answer callback query first to prevent timeout
+      bot().answerCallbackQuery(callback.id);
+
+      const postId = state.postId;
+
+      // Delete all existing photos first
+      await db.deletePostPhotos(postId);
+
+      // Set state for replacing photos
+      setState(chatId, {
+        step: "user_photo_upload",
+        postId: postId,
+        photoMode: "replace",
+        photos: [],
+      });
+
+      await bot().sendMessage(
+        chatId,
+        `🔄 <b>ሚድያ መቀየሪያ ሁኔታ</b>\n\n` +
+          `ሁሉም ነባር ሚድያ ተሰርዘዋል።\n` +
+          `አሁን አዲስ ሚድያ ይላኩ (እስከ 8 ሚድያ ድረስ)።`,
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ ሚድያ መጨመር ጨርሻለሁ",
+                  callback_data: "user_photos_done",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    } catch (error) {
+      console.error("Error in handleUserPhotoReplace:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "ስህተት!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  async handleUserPhotoDelete(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+      const state = getState(chatId);
+
+      if (!state || !state.postId) {
+        return bot().answerCallbackQuery(callback.id, {
+          text: "❌ ለማረምየተመረጠ ማስታወቂያ የለም!",
+        });
+      }
+
+      // Answer callback query first to prevent timeout
+      bot().answerCallbackQuery(callback.id);
+
+      const postId = state.postId;
+
+      // Delete all photos
+      await db.deletePostPhotos(postId);
+
+      // Go back to edit options
+      const updatedPost = await db.getPost(postId);
+      const editOptions = this.getUserEditOptionsForPost(updatedPost, postId);
+
+      await bot().sendMessage(
+        chatId,
+        "✅ ሁሉም ሚድያ ተሰርዘዋል!\n\nሌላ ምን መርመም ይፈልጋሉ?",
+        {
+          reply_markup: {
+            inline_keyboard: editOptions,
+          },
+        }
+      );
+
+      setState(chatId, { step: "user_edit", postId, post: updatedPost });
+    } catch (error) {
+      console.error("Error in handleUserPhotoDelete:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "ስህተት!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  async handleUserPhotosDone(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+      const state = getState(chatId);
+
+      if (!state || !state.postId) {
+        return bot().answerCallbackQuery(callback.id, {
+          text: "❌ ለማረምየተመረጠ ማስታወቂያ የለም!",
+        });
+      }
+
+      // Answer callback query first to prevent timeout
+      bot().answerCallbackQuery(callback.id);
+
+      const postId = state.postId;
+      const photos = state.photos || [];
+
+      if (photos.length > 0) {
+        // Save all photos using the same method as regular photo upload
+        await db.savePostPhotos(chatId, photos);
+      }
+
+      // Go back to edit options - single completion message only
+      const updatedPost = await db.getPost(postId);
+      const editOptions = this.getUserEditOptionsForPost(updatedPost, postId);
+
+      await bot().sendMessage(
+        chatId,
+        photos.length > 0
+          ? "✅ የፎቶ ማረምተጠናቅቋል!\n\nሌላ ምን መርመም ይፈልጋሉ?"
+          : "✅ የፎቶ ማረምተጠናቅቋል!\n\nሌላ ምን መርመም ይፈልጋሉ?",
+        {
+          reply_markup: {
+            inline_keyboard: editOptions,
+          },
+        }
+      );
+
+      setState(chatId, { step: "user_edit", postId, post: updatedPost });
+    } catch (error) {
+      console.error("Error in handleUserPhotosDone:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "ስህተት!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  async handleUserPhotoUpload(msg) {
+    try {
+      const chatId = msg.chat.id;
+      const state = getState(chatId);
+
+      if (!state || state.step !== "user_photo_upload" || !state.postId) {
+        return;
+      }
+
+      let photos = state.photos || [];
+      let newPhoto = null;
+
+      // Handle regular photo
+      if (msg.photo) {
+        newPhoto = {
+          file_id: msg.photo[msg.photo.length - 1].file_id,
+          file_size: msg.photo[msg.photo.length - 1].file_size,
+          type: "photo",
+        };
+      }
+      // Handle document/image
+      else if (
+        msg.document &&
+        msg.document.mime_type &&
+        msg.document.mime_type.startsWith("image/")
+      ) {
+        newPhoto = {
+          file_id: msg.document.file_id,
+          file_size: msg.document.file_size,
+          type: "document",
+        };
+      }
+      // Handle video
+      else if (msg.video) {
+        // Check file size limit (50MB)
+        if (msg.video.file_size > 50 * 1024 * 1024) {
+          return bot().sendMessage(
+            chatId,
+            "❌ ቪዲዮው ከ50MB በላይ ነው። እባክዎ ትንሽ ቪዲዮ ይላኩ።"
+          );
+        }
+        newPhoto = {
+          file_id: msg.video.file_id,
+          file_size: msg.video.file_size,
+          type: "video",
+        };
+      }
+
+      if (!newPhoto) {
+        return bot().sendMessage(chatId, "❌ እባክዎ ትክክለኛ ፎቶ ወይም ቪዲዮ ይላኩ።");
+      }
+
+      // Get current saved photos count (for add mode)
+      let currentSavedCount = 0;
+      if (state.photoMode === "add") {
+        const currentSavedPhotos = await db.getPostPhotos(state.postId);
+        currentSavedCount = currentSavedPhotos.length;
+      }
+
+      const totalWillHave = currentSavedCount + photos.length + 1;
+
+      // Check if adding this photo would exceed the limit
+      if (totalWillHave > 8) {
+        return bot().sendMessage(
+          chatId,
+          `❌ ተጨማሪ ሚድያ መጨመር አይችሉም። ይህ በአጠቃላይ ${totalWillHave} ሚድያ ያደርገዋል፣ ነገር ግን ከፍተኛው 8 ነው።\n\n` +
+            `አሁን የተቀመጡ: ${currentSavedCount}\n` +
+            `በሰላ ውስጥ: ${photos.length}\n` +
+            `እባክዎ 'ጨርሻለሁ' ይጫኑ አሁን ያሉ ሚድያ ለማስቀመጥ።`
+        );
+      }
+
+      // Add the photo to the queue
+      photos.push(newPhoto);
+      setState(chatId, { ...state, photos });
+
+      // Send simple confirmation (matching regular post creation style)
+      await bot().sendMessage(
+        chatId,
+        `✅ ሚድያ ${currentSavedCount + photos.length}/8 ተቀምጧል\n\n` +
+          `${
+            currentSavedCount + photos.length < 8
+              ? "📷 ተጨማሪ ሚድያ መላክ ይችላሉ ወይም ቁልፉን ይጫኑ።"
+              : "✅ ከፍተኛ ቁጥር ላይ ደርሷል! እባክዎ 'ጨርሻለሁ' ይጫኑ።"
+          }`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ ሚድያ መጨመር ጨርሻለሁ",
+                  callback_data: "user_photos_done",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    } catch (error) {
+      console.error("Error in handleUserPhotoUpload:", error);
+      bot().sendMessage(chatId, "❌ ሚድያ ማስተናገድ ተሳንቷል። እባክዎ እንደገና ይሞክሩ።");
+    }
+  },
+
+  async handleUserMediaGroupPhoto(msg) {
+    const chatId = msg.chat.id;
+    try {
+      const {
+        addToMediaGroup,
+        getMediaGroup,
+        clearMediaGroup,
+      } = require("../services/botService");
+      const mediaGroupId = msg.media_group_id;
+
+      // Add photo/video to media group collection
+      let newPhoto = null;
+      if (msg.photo) {
+        newPhoto = {
+          file_id: msg.photo[msg.photo.length - 1].file_id,
+          file_size: msg.photo[msg.photo.length - 1].file_size,
+          type: "photo",
+        };
+        addToMediaGroup(mediaGroupId, newPhoto);
+      } else if (msg.video && msg.video.file_size <= 50 * 1024 * 1024) {
+        newPhoto = {
+          file_id: msg.video.file_id,
+          file_size: msg.video.file_size,
+          type: "video",
+        };
+        addToMediaGroup(mediaGroupId, newPhoto);
+      }
+
+      // Set a timeout to process the complete media group
+      // This gives time for all photos in the group to arrive
+      setTimeout(async () => {
+        try {
+          const state = getState(chatId);
+          let photos = state.photos || [];
+
+          // Check if this media group has already been processed
+          const mediaGroupData =
+            require("../services/botService").mediaGroups?.get(mediaGroupId);
+          if (!mediaGroupData || mediaGroupData.processed) return;
+
+          // Mark as processed to prevent duplicate confirmations
+          mediaGroupData.processed = true;
+
+          const mediaGroupPhotos = getMediaGroup(mediaGroupId);
+          if (mediaGroupPhotos.length === 0) return;
+
+          // Get current saved photos count (for add mode)
+          let currentSavedCount = 0;
+          if (state.photoMode === "add") {
+            const currentSavedPhotos = await db.getPostPhotos(state.postId);
+            currentSavedCount = currentSavedPhotos.length;
+          }
+
+          // Calculate how many photos we can add
+          const maxCanAdd = 8 - currentSavedCount - photos.length;
+          const totalPhotosToAdd = Math.min(mediaGroupPhotos.length, maxCanAdd);
+
+          if (totalPhotosToAdd <= 0) {
+            await bot().sendMessage(
+              chatId,
+              `❌ ተጨማሪ ሚድያ መጨመር አይችሉም። ከፍተኛው በአጠቃላይ 8 ነው።\n\n` +
+                `አሁን የተቀመጡ: ${currentSavedCount}\n` +
+                `በሰላ ውስጥ: ${photos.length}\n` +
+                `እባክዎ 'ጨርሻለሁ' ይጫኑ አሁን ያሉ ሚድያ ለማስቀመጥ።`
+            );
+            clearMediaGroup(mediaGroupId);
+            return;
+          }
+
+          const newPhotos = mediaGroupPhotos.slice(0, totalPhotosToAdd);
+          photos = [...photos, ...newPhotos];
+
+          // Clear the media group from memory
+          clearMediaGroup(mediaGroupId);
+
+          // Update state
+          setState(chatId, { ...state, photos });
+
+          const totalWillHave = currentSavedCount + photos.length;
+
+          // Send simple confirmation message (matching regular post creation style)
+          if (totalWillHave >= 8) {
+            await bot().sendMessage(
+              chatId,
+              `✅ ሚድያ 8/8 ተቀምጠዋል${
+                mediaGroupPhotos.length > totalPhotosToAdd
+                  ? ` (ከ${mediaGroupPhotos.length} ሚድያ የመጀመሪያውን ${totalPhotosToAdd} ወሰድን)`
+                  : ""
+              }\n\n` + `✅ ከፍተኛ ቁጥር ላይ ደርሷል! እባክዎ 'ጨርሻለሁ' ይጫኑ።`,
+              {
+                reply_markup: {
+                  inline_keyboard: [
+                    [
+                      {
+                        text: "✅ ሚድያ መጨመር ጨርሻለሁ",
+                        callback_data: "user_photos_done",
+                      },
+                    ],
+                  ],
+                },
+              }
+            );
+          } else {
+            await bot().sendMessage(
+              chatId,
+              `✅ ሚድያ ${totalWillHave}/8 ተቀምጧል\n\n` +
+                `${
+                  totalWillHave < 8
+                    ? "📷 ተጨማሪ ሚድያ መላክ ይችላሉ ወይም ቁልፉን ይጫኑ።"
+                    : "✅ ከፍተኛ ቁጥር ላይ ደርሷል! እባክዎ 'ጨርሻለሁ' ይጫኑ።"
+                }`,
+              {
+                reply_markup: {
+                  inline_keyboard: [
+                    [
+                      {
+                        text: "✅ ሚድያ መጨመር ጨርሻለሁ",
+                        callback_data: "user_photos_done",
+                      },
+                    ],
+                  ],
+                },
+              }
+            );
+          }
+        } catch (error) {
+          console.error("Error processing user media group:", error);
+        }
+      }, 1000); // Wait 1 second for all photos in group to arrive
+    } catch (error) {
+      console.error("Error in handleUserMediaGroupPhoto:", error);
+      bot().sendMessage(chatId, "❌ የሚድያ ቡድን ማስተናገድ ተሳንቷል። እባክዎ እንደገና ይሞክሩ።");
+    }
+  },
+
+  // User villa type edit handlers
+  async handleUserVillaTypeEdit(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+      const villaType = callback.data.split("_")[3];
+      const state = getState(chatId);
+
+      if (!state || !state.postId) {
+        return bot().answerCallbackQuery(callback.id, { text: "ስህተት!" });
+      }
+
+      // Answer callback query first to prevent timeout
+      bot().answerCallbackQuery(callback.id);
+
+      // Update the post
+      await db.updatePost(chatId, { villa_type: villaType });
+
+      // Get updated post and show edit options again
+      const updatedPost = await db.getPost(state.postId);
+      const editOptions = this.getUserEditOptionsForPost(
+        updatedPost,
+        state.postId
+      );
+
+      await bot().sendMessage(
+        chatId,
+        `✅ የቪላ ዓይነት በተሳካ ሁኔታ ወደ "${villaType}" ተማርሟል!\n\nሌላ ምን መርመም ይፈልጋሉ?`,
+        {
+          reply_markup: {
+            inline_keyboard: editOptions,
+          },
+        }
+      );
+
+      setState(chatId, {
+        step: "user_edit",
+        postId: state.postId,
+        post: updatedPost,
+      });
+    } catch (error) {
+      console.error("Error in handleUserVillaTypeEdit:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "ስህተት!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  // User bathroom type edit handlers
+  async handleUserBathroomTypeEdit(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+      const bathroomType = callback.data.split("_")[3];
+      const state = getState(chatId);
+
+      if (!state || !state.postId) {
+        return bot().answerCallbackQuery(callback.id, { text: "ስህተት!" });
+      }
+
+      // Answer callback query first to prevent timeout
+      bot().answerCallbackQuery(callback.id);
+
+      // Update the post
+      await db.updatePost(chatId, { bathroom_type: bathroomType });
+
+      // Get updated post and show edit options again
+      const updatedPost = await db.getPost(state.postId);
+      const editOptions = this.getUserEditOptionsForPost(
+        updatedPost,
+        state.postId
+      );
+
+      await bot().sendMessage(
+        chatId,
+        `✅ የመታጠቢያ ዓይነት በተሳካ ሁኔታ ወደ "${bathroomType}" ተማርሟል!\n\nሌላ ምን መርመም ይፈልጋሉ?`,
+        {
+          reply_markup: {
+            inline_keyboard: editOptions,
+          },
+        }
+      );
+
+      setState(chatId, {
+        step: "user_edit",
+        postId: state.postId,
+        post: updatedPost,
+      });
+    } catch (error) {
+      console.error("Error in handleUserBathroomTypeEdit:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "ስህተት!" });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  // Helper function to get edit options based on post type (USER VERSION)
+  getUserEditOptionsForPost(post, postId) {
+    const commonFields = [
+      [
+        {
+          text: "📋 የንብረት ርዕስ",
+          callback_data: `user_edit_field_title_${postId}`,
+        },
+      ],
+      [
+        {
+          text: "📍 አድራሻ",
+          callback_data: `user_edit_field_location_${postId}`,
+        },
+      ],
+      [{ text: "💰 ዋጋ", callback_data: `user_edit_field_price_${postId}` }],
+      [
+        {
+          text: "📞 ተያያዥ መረጃ",
+          callback_data: `user_edit_field_contact_info_${postId}`,
+        },
+      ],
+      [
+        {
+          text: "👤 የሚታየው ስም",
+          callback_data: `user_edit_field_display_name_${postId}`,
+        },
+      ],
+    ];
+
+    const propertySpecificFields = [];
+
+    // Add property-specific fields based on property type and title
+    if (post.property_type === "residential") {
+      if (post.title === "ግቢ ውስጥ ያለ" && post.rooms_count) {
+        propertySpecificFields.push([
+          {
+            text: "🛖 የክፍሎች ብዛት",
+            callback_data: `user_edit_field_rooms_count_${postId}`,
+          },
+        ]);
+      }
+
+      if (post.title === "ሙሉ ግቢ") {
+        if (post.villa_type) {
+          propertySpecificFields.push([
+            {
+              text: "🏡 የቪላ ዓይነት",
+              callback_data: `user_edit_field_villa_type_${postId}`,
+            },
+          ]);
+        }
+        if (post.villa_type_other) {
+          propertySpecificFields.push([
+            {
+              text: "🏡 የቪላ ዓይነት (ሌላ)",
+              callback_data: `user_edit_field_villa_type_other_${postId}`,
+            },
+          ]);
+        }
+      }
+
+      if (["ኮንዶሚንየም", "አፓርታማ"].includes(post.title) && post.floor) {
+        propertySpecificFields.push([
+          { text: "🏢 ፎቅ", callback_data: `user_edit_field_floor_${postId}` },
+        ]);
+      }
+
+      if (post.bedrooms) {
+        propertySpecificFields.push([
+          {
+            text: "🛏️ መኝታ ክፍሎች",
+            callback_data: `user_edit_field_bedrooms_${postId}`,
+          },
+        ]);
+      }
+
+      if (post.bathrooms) {
+        propertySpecificFields.push([
+          {
+            text: "🚿 መታጠቢያ ክፍሎች",
+            callback_data: `user_edit_field_bathrooms_${postId}`,
+          },
+        ]);
+      }
+
+      if (post.bathroom_type) {
+        propertySpecificFields.push([
+          {
+            text: "🚿 የመታጠቢያ ዓይነት",
+            callback_data: `user_edit_field_bathroom_type_${postId}`,
+          },
+        ]);
+      }
+    } else if (post.property_type === "commercial") {
+      if (
+        ["ቢሮ", "ሱቅ", "መጋዘን", "ለየትኛውም ንግድ"].includes(post.title) &&
+        post.floor
+      ) {
+        propertySpecificFields.push([
+          { text: "🏢 ፎቅ", callback_data: `user_edit_field_floor_${postId}` },
+        ]);
+      }
+    }
+
+    // Add common fields that might be present
+    if (post.property_size) {
+      propertySpecificFields.push([
+        {
+          text: "📐 የንብረት መጠን",
+          callback_data: `user_edit_field_property_size_${postId}`,
+        },
+      ]);
+    }
+
+    if (post.description) {
+      propertySpecificFields.push([
+        {
+          text: "📝 መግለጫ",
+          callback_data: `user_edit_field_description_${postId}`,
+        },
+      ]);
+    }
+
+    if (post.platform_link) {
+      propertySpecificFields.push([
+        {
+          text: "🔗 ፕላትፎርም ሊንክ",
+          callback_data: `user_edit_field_platform_link_${postId}`,
+        },
+      ]);
+    }
+
+    // Add photos editing option
+    propertySpecificFields.push([
+      {
+        text: "📷 ሚድያ",
+        callback_data: `user_edit_field_photos_${postId}`,
+      },
+    ]);
+
+    // Combine all fields
+    const allFields = [
+      ...commonFields,
+      ...propertySpecificFields,
+      [{ text: "✅ ማረም ጨርሻለሁ!", callback_data: `user_edit_done_${postId}` }],
+    ];
+
+    return allFields;
+  },
+
+  // Helper function to get field-specific edit information (USER VERSION)
+  getUserFieldEditInfo(field, post) {
+    const fieldMappings = {
+      title: {
+        displayName: "የንብረት ርዕስ",
+        currentValue: post.title || "N/A",
+        prompt: "📋 አዲስ ርዕስ ያስገቡ:",
+        dbField: "title",
+      },
+      location: {
+        displayName: "አድራሻ",
+        currentValue: post.location || "N/A",
+        prompt: "📍 አዲስ አድራሻ ያስገቡ:",
+        dbField: "location",
+      },
+      price: {
+        displayName: "ዋጋ",
+        currentValue: post.price || "N/A",
+        prompt: "💰 አዲስ ዋጋ ያስገቡ:",
+        dbField: "price",
+      },
+      contact_info: {
+        displayName: "ተያያዥ መረጃ",
+        currentValue: post.contact_info || "N/A",
+        prompt: "📞 አዲስ ተያያዥ መረጃ ያስገቡ:",
+        dbField: "contact_info",
+      },
+      display_name: {
+        displayName: "የሚታየው ስም",
+        currentValue: post.display_name || "N/A",
+        prompt: "👤 አዲስ የሚታየው ስም ያስገቡ:",
+        dbField: "display_name",
+      },
+      description: {
+        displayName: "መግለጫ",
+        currentValue: post.description || "N/A",
+        prompt: "📝 አዲስ መግለጫ ያስገቡ:",
+        dbField: "description",
+      },
+      rooms_count: {
+        displayName: "የክፍሎች ብዛት",
+        currentValue: post.rooms_count || "N/A",
+        prompt: "🛖 የክፍሎች ብዛት ያስገቡ (ቁጥር ብቻ):",
+        dbField: "rooms_count",
+      },
+      villa_type: {
+        displayName: "የቪላ ዓይነት",
+        currentValue: post.villa_type || "N/A",
+        prompt: "🏡 የቪላ ዓይነቱን ይምረጡ:",
+        dbField: "villa_type",
+        keyboard: {
+          inline_keyboard: [
+            [{ text: "🏡 ቪላ", callback_data: "user_villa_edit_ቪላ" }],
+            [{ text: "🛖 ጂ+1", callback_data: "user_villa_edit_ጂ+1" }],
+            [{ text: "🏢 ጂ+2", callback_data: "user_villa_edit_ጂ+2" }],
+            [{ text: "🏢 ጂ+3", callback_data: "user_villa_edit_ጂ+3" }],
+            [{ text: "🏗️ ሌላ", callback_data: "user_villa_edit_ሌላ" }],
+          ],
+        },
+      },
+      villa_type_other: {
+        displayName: "የቪላ ዓይነት (ሌላ)",
+        currentValue: post.villa_type_other || "N/A",
+        prompt: "🏡 የቪላ ዓይነቱን ያስገቡ:",
+        dbField: "villa_type_other",
+      },
+      floor: {
+        displayName: "ፎቅ",
+        currentValue: post.floor || "N/A",
+        prompt: "🏢 የፎቅ ቁጥሩን ያስገቡ (1, 2..) ወይም ለመሬት ቤት 0:",
+        dbField: "floor",
+      },
+      bedrooms: {
+        displayName: "መኝታ ክፍሎች",
+        currentValue: post.bedrooms || "N/A",
+        prompt: "🛏️ የመኝታ ክፍሎች ብዛት ያስገቡ:",
+        dbField: "bedrooms",
+      },
+      bathrooms: {
+        displayName: "መታጠቢያ ክፍሎች",
+        currentValue: post.bathrooms || "N/A",
+        prompt: "🚿 የመታጠቢያ ክፍሎች ብዛት ያስገቡ:",
+        dbField: "bathrooms",
+      },
+      bathroom_type: {
+        displayName: "የመታጠቢያ ዓይነት",
+        currentValue: post.bathroom_type || "N/A",
+        prompt: "🚿 የመታጠቢያ ዓይነቱን ይምረጡ:",
+        dbField: "bathroom_type",
+        keyboard: {
+          inline_keyboard: this.getUserBathroomTypeOptions(post.title),
+        },
+      },
+      property_size: {
+        displayName: "የንብረት መጠን",
+        currentValue: post.property_size || "N/A",
+        prompt: "📐 የንብረት መጠን ያስገቡ:",
+        dbField: "property_size",
+      },
+      platform_link: {
+        displayName: "ፕላትፎርም ሊንክ",
+        currentValue: post.platform_link || "N/A",
+        prompt: "🔗 ፕላትፎርም ሊንክ ያስገቡ (URL):",
+        dbField: "platform_link",
+      },
+      photos: {
+        displayName: "ሚድያ",
+        currentValue: "_",
+        prompt: "📷 የሚድያ አስተዳደር:\n\nሚድያዎችን እንዴት መቆጣጠር ይፈልጋሉ?",
+        dbField: "photos",
+        keyboard: {
           inline_keyboard: [
             [
               {
-                text: "🏡 የንብረት ዓይነት",
-                callback_data: `user_edit_field_title_${postId}`,
+                text: "➕ ያለው ሚድያ ላይ ይጨምሩ",
+                callback_data: "user_photo_add",
               },
             ],
             [
               {
-                text: "📍 አድራሻ",
-                callback_data: `user_edit_field_location_${postId}`,
+                text: "🔄 ሁሉንም ሚድያ ይቀይሩ",
+                callback_data: "user_photo_replace",
               },
             ],
             [
               {
-                text: "💰 ዋጋ",
-                callback_data: `user_edit_field_price_${postId}`,
-              },
-            ],
-            [
-              {
-                text: "📞 ተያያዥ መረጃ",
-                callback_data: `user_edit_field_contact_${postId}`,
-              },
-            ],
-            [
-              {
-                text: "📝 መግለጫ",
-                callback_data: `user_edit_field_description_${postId}`,
-              },
-            ],
-            [
-              {
-                text: "🔗 ፕላትፎርም ሊንክ",
-                callback_data: `user_edit_field_platform_${postId}`,
-              },
-            ],
-            [
-              {
-                text: "📷 ፎቶዎች",
-                callback_data: `user_edit_field_photos_${postId}`,
-              },
-            ],
-            [
-              {
-                text: "✅ ማርመሙን አጠናቅቅ",
-                callback_data: `user_edit_done_${postId}`,
+                text: "🗑️ ሁሉንም ሚድያ ይሰርዙ",
+                callback_data: "user_photo_delete",
               },
             ],
           ],
         },
-      });
-    } catch (error) {
-      console.error("Error showing edit options:", error);
-      bot().sendMessage(chatId, "❌ የማርመሙ አማራጮች ማሳየት ተሳንቶአል። እባክዎ እንደገና ይሞክሩ።");
+      },
+    };
+
+    return (
+      fieldMappings[field] || {
+        displayName: field,
+        currentValue: "N/A",
+        prompt: `አዲስ ${field} ያስገቡ:`,
+        dbField: field,
+      }
+    );
+  },
+
+  // Helper function to get bathroom type options for users
+  getUserBathroomTypeOptions(propertyTitle) {
+    if (["ስቱዲዮ", "ኮንዶሚንየም", "አፓርታማ"].includes(propertyTitle)) {
+      return [
+        [{ text: "🚿 ሻወር", callback_data: "user_bathroom_edit_ሻወር" }],
+        [{ text: "🛁 ባዝ", callback_data: "user_bathroom_edit_ባዝ" }],
+        [
+          {
+            text: "🚿🛁 ሻወር እና ባዝ",
+            callback_data: "user_bathroom_edit_ሻወር እና ባዝ",
+          },
+        ],
+      ];
+    } else {
+      return [
+        [{ text: "🚿 ሻወር", callback_data: "user_bathroom_edit_ሻወር" }],
+        [{ text: "🛁 ባዝ", callback_data: "user_bathroom_edit_ባዝ" }],
+        [
+          {
+            text: "🚿🛁 ሻወር እና ባዝ",
+            callback_data: "user_bathroom_edit_ሻወር እና ባዝ",
+          },
+        ],
+        [{ text: "🚽 ቀላል", callback_data: "user_bathroom_edit_ቀላል" }],
+      ];
     }
   },
 
@@ -1111,47 +2164,56 @@ module.exports = {
     try {
       const chatId = callback.message.chat.id;
       const parts = callback.data.split("_");
-      const field = parts[3];
-      const postId = parts[4];
+
+      // Handle compound field names (like contact_info, display_name, etc.)
+      let field, postId;
+      if (parts.length === 5) {
+        field = parts[3];
+        postId = parts[4];
+      } else if (parts.length === 6) {
+        field = `${parts[3]}_${parts[4]}`;
+        postId = parts[5];
+      } else {
+        console.error("Invalid callback data format:", callback.data);
+        return bot().answerCallbackQuery(callback.id, {
+          text: "ልክ ያልሆነ ቅርጽ!",
+        });
+      }
 
       // Answer callback query first to prevent timeout
       bot().answerCallbackQuery(callback.id);
+
+      // Get post details for context
+      const post = await db.getPost(postId);
+      if (!post) {
+        return bot().sendMessage(chatId, "❌ ማስታወቂያ አልተገኘም!");
+      }
 
       setState(chatId, {
         step: `user_edit_${field}`,
         postId: parseInt(postId),
         editingField: field,
+        post: post,
       });
 
-      const fieldNames = {
-        title: "የንብረት ዓይነት",
-        location: "አድራሻ",
-        price: "ዋጋ",
-        contact: "ተያያዥ መረጃ",
-        description: "መግለጫ",
-        platform: "ፕላትፎርም ሊንክ",
-        photos: "ፎቶዎች",
-      };
+      // Get field-specific prompts and validation
+      const fieldInfo = this.getUserFieldEditInfo(field, post);
 
-      if (field === "photos") {
-        // Handle photos differently
-        await bot().sendMessage(
-          chatId,
-          "📷 አዲስ ፎቶዎች ያስገቡ ወይም 'ሰዓጠ' ይተይቡ ፎቶዎችን ለማጥፋት:"
-        );
-      } else {
-        await bot().sendMessage(
-          chatId,
-          `✏️ አዲስ ${fieldNames[field]} ያስገቡ:\n\n` +
-            `<i>አዲስ ${fieldNames[field]}ዎን ይተይቡ እና ይላኩ።</i>`,
-          { parse_mode: "HTML" }
-        );
-      }
+      await bot().sendMessage(
+        chatId,
+        `✏️ <b>${fieldInfo.displayName} ማረሚያ</b>\n\n` +
+          `📋 <b>አሁን ያለው:</b> ${fieldInfo.currentValue}\n\n` +
+          `${fieldInfo.prompt}`,
+        {
+          parse_mode: "HTML",
+          reply_markup: fieldInfo.keyboard || undefined,
+        }
+      );
     } catch (error) {
       console.error("Error in handleUserEditField:", error);
       try {
         bot().answerCallbackQuery(callback.id, {
-          text: "የማርመሙ ሂደት ተሳንቷል!",
+          text: "የመርመሚያ ሂደት ጀማር ተሳንቷል!",
         });
       } catch (answerError) {
         console.error("Error answering callback query:", answerError);
@@ -1170,107 +2232,131 @@ module.exports = {
 
       const field = state.editingField;
       const postId = state.postId;
+      const post = state.post;
 
-      // Handle different field types
+      // Handle photos differently - photos now use buttons, not text input
       if (field === "photos") {
-        if (msg.text && msg.text.toLowerCase() === "ሰዓጠ") {
-          // Delete photos
-          await db.deletePostPhotos(postId);
-          await bot().sendMessage(chatId, "✅ ፎቶዎች ተጠፍተዋል!");
-        } else if (msg.photo) {
-          // Handle new photo
-          await this.handlePhotoUpload(msg);
-          return;
-        }
-      } else {
-        // Update the post field
-        const updateData = {};
-
-        if (field === "platform") {
-          const link = msg.text.trim();
-          let platformName = "ሌላ";
-          if (link.includes("facebook.com") || link.includes("fb.com")) {
-            platformName = "Facebook";
-          } else if (link.includes("tiktok.com")) {
-            platformName = "TikTok";
-          } else if (link.includes("jiji.")) {
-            platformName = "Jiji";
-          } else if (
-            link.includes("youtube.com") ||
-            link.includes("youtu.be")
-          ) {
-            platformName = "YouTube";
-          }
-
-          updateData.platform_link = link;
-          updateData.platform_name = platformName;
-        } else {
-          // Add validation for platform link field
-          if (field === "platform") {
-            const link = msg.text.trim();
-
-            // Check if user wants to skip
-            if (link.toLowerCase() === "ዝለል" || link.toLowerCase() === "ሃሳፍ") {
-              // Skip platform link - don't update, just proceed to show edit options
-              await this.showEditOptions(chatId);
-              return;
-            }
-
-            let validatedLink = link;
-
-            // Validate URL
-            try {
-              new URL(link);
-            } catch (e) {
-              // Try with http:// prefix if no protocol is provided
-              try {
-                new URL(`http://${link}`);
-                validatedLink = `http://${link}`;
-              } catch (e2) {
-                return bot().sendMessage(
-                  chatId,
-                  "❌ እባክዎ ትክክለኛ ሊንክ ያስገቡ (https://example.com):\n\nወይም 'ዝለል' ወይም 'ሃሳፍ' ይጻፉ ለመዝለል።"
-                );
-              }
-            }
-
-            // Update the link in updateData
-            updateData.platform_link = validatedLink;
-          } else {
-            updateData[field] = msg.text.trim();
-          }
-        }
-
-        await db.updatePost(chatId, updateData);
-
-        await bot().sendMessage(
+        return bot().sendMessage(
           chatId,
-          `✅ ${field === "platform" ? "ፕላትፎርም ሊንክ" : field} ተማርሟል!\n\n` +
-            "ሌላ ምን መርመም ይፈልጋሉ?"
+          "❌ እባክዎ ከላይ ያሉትን የሚድያ አስተዳደር ቁልፎች ይጠቀሙ።"
         );
       }
 
-      // Show edit options again
-      await this.showEditOptions(chatId);
+      // Get field info for validation
+      const fieldInfo = this.getUserFieldEditInfo(field, post);
+
+      // Validate input based on field type
+      const validationResult = this.validateUserFieldInput(
+        field,
+        msg.text.trim()
+      );
+      if (!validationResult.isValid) {
+        return bot().sendMessage(chatId, `❌ ${validationResult.error}`);
+      }
+
+      // Update the post field using regular updatePost for users
+      const updateData = {};
+      updateData[fieldInfo.dbField] = validationResult.value;
+
+      await db.updatePost(chatId, updateData);
+
+      // Get updated post for displaying new edit options
+      const updatedPost = await db.getPost(postId);
+      const editOptions = this.getUserEditOptionsForPost(updatedPost, postId);
+
+      await bot().sendMessage(
+        chatId,
+        `✅ ${fieldInfo.displayName} በተሳካ ሁኔታ ተማርሟል!\n\n` +
+          `📋 <b>አዲስ ዋጋ:</b> ${validationResult.value}\n\n` +
+          "ሌላ ምን መርመም ይፈልጋሉ?",
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: editOptions,
+          },
+        }
+      );
+
+      setState(chatId, { step: "user_edit", postId, post: updatedPost });
     } catch (error) {
       console.error("Error in handleUserEditInput:", error);
-      bot().sendMessage(msg.chat.id, "❌ ማርመሙ ተሳንቷል። እባክዎ እንደገና ይሞክሩ።");
+      bot().sendMessage(msg.chat.id, "❌ መስክ ማዘመን አልተቻለም። እባክዎ እንደገና ይሞክሩ።");
+    }
+  },
+
+  // User field validation (similar to admin but adapted for users)
+  validateUserFieldInput(field, value) {
+    switch (field) {
+      case "price":
+        if (!/^\d+(\.\d{1,2})?$/.test(value)) {
+          return {
+            isValid: false,
+            error: "እባክዎ ትክክለኛ ዋጋ ያስገቡ (ቁጥሮች ብቻ)",
+          };
+        }
+        return { isValid: true, value: value };
+
+      case "rooms_count":
+      case "bedrooms":
+      case "bathrooms":
+      case "floor":
+        if (!/^\d+$/.test(value)) {
+          return {
+            isValid: false,
+            error: "እባክዎ ትክክለኛ ቁጥር ያስገቡ",
+          };
+        }
+        return { isValid: true, value: parseInt(value) };
+
+      case "platform_link":
+        if (value.toLowerCase() === "ዝለል" || value.toLowerCase() === "ሃሳፍ") {
+          return { isValid: true, value: null };
+        }
+
+        let validatedLink = value;
+        try {
+          new URL(value);
+        } catch (e) {
+          try {
+            new URL(`http://${value}`);
+            validatedLink = `http://${value}`;
+          } catch (e2) {
+            return {
+              isValid: false,
+              error: "እባክዎ ትክክለኛ ሊንክ ያስገቡ (https://example.com) ወይም 'ዝለል' ይጻፉ",
+            };
+          }
+        }
+        return { isValid: true, value: validatedLink };
+
+      default:
+        if (!value || value.length < 1) {
+          return {
+            isValid: false,
+            error: "እባክዎ ዋጋ ያስገቡ",
+          };
+        }
+        return { isValid: true, value: value };
     }
   },
 
   async handleUserEditDone(callback) {
     try {
       const chatId = callback.message.chat.id;
+      const postId = callback.data.split("_")[3];
 
       // Answer callback query first to prevent timeout
-      bot().answerCallbackQuery(callback.id, { text: "ማርመሙ ተጠናቀቀ!" });
+      bot().answerCallbackQuery(callback.id, { text: "ማረም ጨርሻለሁ!" });
 
       setState(chatId, { step: null });
 
-      await bot().editMessageText("✅ ማርመሙ ተጠናቆላል!\n\nይህ አሁን የማስታወቂያዎ ቅጽ ነው:", {
-        chat_id: chatId,
-        message_id: callback.message.message_id,
-      });
+      await bot().editMessageText(
+        "✅  ተጠናቅቋል!\n\nአሁን የማስታወቂያዎን ቅድመ ዕይታ እንደገና ማየት ይችላሉ:",
+        {
+          chat_id: chatId,
+          message_id: callback.message.message_id,
+        }
+      );
 
       // Show preview again after editing
       await this.showPreview(chatId);
@@ -1278,7 +2364,7 @@ module.exports = {
       console.error("Error in handleUserEditDone:", error);
       try {
         bot().answerCallbackQuery(callback.id, {
-          text: "ማርመሙ መጨረስ ተሳንቷል!",
+          text: "ማረሙን  መጨረስ አልተቻለም !",
         });
       } catch (answerError) {
         console.error("Error answering callback query:", answerError);
@@ -1294,10 +2380,10 @@ module.exports = {
         message_id: msg.message_id,
       });
 
-      // Reset state and start over
+      // Reset state and start over with registration check
       setState(chatId, { step: null });
       const userController = require("./userController");
-      await userController.askListingType(chatId);
+      await userController.handleStartPostingWithRegistrationCheck(chatId);
     } catch (error) {
       console.error("Error in handleStartNewListing:", error);
       bot().sendMessage(chatId, "❌ይቅርታ! እባክዎ /start ተጠቅመው እንደገና ይሞክሩ።");
@@ -1309,13 +2395,20 @@ module.exports = {
     try {
       const mediaGroupId = msg.media_group_id;
 
-      // Add photo to media group collection
+      // Add photo/video to media group collection
       let newPhoto = null;
       if (msg.photo) {
         newPhoto = {
           file_id: msg.photo[msg.photo.length - 1].file_id,
           file_size: msg.photo[msg.photo.length - 1].file_size,
           type: "photo",
+        };
+        addToMediaGroup(mediaGroupId, newPhoto);
+      } else if (msg.video && msg.video.file_size <= 50 * 1024 * 1024) {
+        newPhoto = {
+          file_id: msg.video.file_id,
+          file_size: msg.video.file_size,
+          type: "video",
         };
         addToMediaGroup(mediaGroupId, newPhoto);
       }
@@ -1326,8 +2419,16 @@ module.exports = {
         try {
           const state = getState(chatId);
           let photos = state.photos || [];
-          const mediaGroupPhotos = getMediaGroup(mediaGroupId);
 
+          // Check if this media group has already been processed
+          const mediaGroupData =
+            require("../services/botService").mediaGroups?.get(mediaGroupId);
+          if (!mediaGroupData || mediaGroupData.processed) return;
+
+          // Mark as processed to prevent duplicate confirmations
+          mediaGroupData.processed = true;
+
+          const mediaGroupPhotos = getMediaGroup(mediaGroupId);
           if (mediaGroupPhotos.length === 0) return;
 
           // Add all photos from media group to user's photos
@@ -1348,11 +2449,11 @@ module.exports = {
           if (photos.length >= 8) {
             await bot().sendMessage(
               chatId,
-              `✅ ፎቶዎች 8/8 ተቀምጠዋል${
+              `✅ ሚድያ 8/8 ተቀምጠዋል${
                 mediaGroupPhotos.length > totalPhotosToAdd
-                  ? ` (ከ${mediaGroupPhotos.length} ፎቶዎች የመጀመሪያውን 8 ወሰድን)`
+                  ? ` (ከ${mediaGroupPhotos.length} ሚድያ የመጀመሪያውን 8 ወሰድን)`
                   : ""
-              }\n\n` + `✅ 8 ፎቶዎች አስገብተዋል። እባክዎ 'ጨርሻለሁ' የሚለውን ቁልፍ ይጫኑ።`,
+              }\n\n` + `✅ 8 ሚድያ አስገብተዋል። እባክዎ 'ጨርሻለሁ' የሚለውን ቁልፍ ይጫኑ።`,
               {
                 reply_markup: {
                   inline_keyboard: [
@@ -1364,8 +2465,8 @@ module.exports = {
           } else {
             await bot().sendMessage(
               chatId,
-              `✅ ${newPhotos.length} ፎቶዎች ተጨመርዋል! አጠቃላይ: ${photos.length}/8\n\n` +
-                `📷 ተጨማሪ ፎቶዎች መላክ ይችላሉ ወይም ሲጨርሱ "ጨርሻለሁ" የሚለውን  ቁልፉ ይጫኑ።`,
+              `✅ ${newPhotos.length} ሚድያ ተጨመርዋል! አጠቃላይ: ${photos.length}/8\n\n` +
+                `📷 ተጨማሪ ሚድያ መላክ ይችላሉ ወይም ሲጨርሱ "ጨርሻለሁ" የሚለውን  ቁልፉ ይጫኑ።`,
               {
                 reply_markup: {
                   inline_keyboard: [
@@ -1381,7 +2482,7 @@ module.exports = {
       }, 1000); // Wait 1 second for all photos in group to arrive
     } catch (error) {
       console.error("Error in handleMediaGroupPhoto:", error);
-      bot().sendMessage(chatId, "❌ ፎቶ ማስቀመጥ አልተቻለም እባክዎ እንደገና ይሞክሩ።");
+      bot().sendMessage(chatId, "❌ ሚድያ ማስቀመጥ አልተቻለም እባክዎ እንደገና ይሞክሩ።");
     }
   },
 };
