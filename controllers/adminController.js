@@ -1815,7 +1815,7 @@ module.exports = {
       // Notify user with rejection reason and try again option
       await bot().sendMessage(
         post.telegram_id,
-        "❌ <b>ማስታወቂያዎ አልተለቀቀም</b>\n\n" +
+        "❌ <b>ማስታወቂያዎ አልተለቀቀም!</b>\n\n" +
           `📝 <b>ምክንያት:</b> ${reason}\n\n` +
           "እባክዎ ከላይ ያለውን ችግር ያስተካክሉ እና እንደገና ይሞክሩ:",
         {
