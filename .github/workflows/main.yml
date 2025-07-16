@@ -4,11 +4,11 @@ on:
   push:
     branches:
       - staging
-      - main  # Changed from 'master' to 'main'
+      - main
 
 jobs:
   deploy_qa:
-    if: github.ref == 'refs/heads/main'  # Changed from 'master' to 'main'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -23,24 +23,38 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           script: |
             mkdir -p apps/betbot && cd apps/betbot
-            
+
             if [ -d ".git" ]; then
-              git stash
-              git pull origin main  # Changed from 'master' to 'main'
+              # Ensure correct remote and branch tracking
+              git remote set-url origin https://github.com/yonathanth/betbot.git
+              git fetch origin
+              
+              # Reset to exactly match remote main branch
+              git checkout -B main origin/main --force
+              git reset --hard origin/main
+              
+              # Clean any untracked files
+              git clean -fd
             else
-              git clone -b main https://github.com/yonathanth/betbot.git .  # Changed branch here too
+              # Fresh clone if directory isn't a git repo
+              git clone -b main https://github.com/yonathanth/betbot.git .
             fi
-            
+
+            # Install dependencies
             npm install --force
 
+            # PM2 process management
             pid=$(pm2 pid "betbot" 2>/dev/null)
             if [ -n "$pid" ]; then
               echo "Reloading betbot"
               pm2 reload "betbot"
               pm2 save
             else
-              echo "New application"
+              echo "Starting new betbot instance"
               pm2 start npm --name "betbot" -- start
-              pm2 startup
               pm2 save
             fi
+
+            # Verify deployment
+            echo "Current commit: $(git rev-parse HEAD)"
+            echo "Deployment completed at $(date)"
