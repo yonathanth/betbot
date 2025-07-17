@@ -1116,7 +1116,7 @@ module.exports = {
         "\n\n──────────────────";
 
       const inlineKeyboard = [
-        [{ text: "✅ ይህ ይበቃኛል", callback_data: "confirm_listing" }],
+        [{ text: "✅ ትክክል ነው", callback_data: "confirm_listing" }],
         [
           { text: "✏️ ማረም", callback_data: `user_edit_${postId}` },
           { text: "🔄 እንደ አዲስ ጀመር", callback_data: "start_new_listing" },
@@ -1162,7 +1162,7 @@ module.exports = {
           await bot().sendMediaGroup(chatId, mediaGroup);
 
           // Send action buttons as separate message
-          await bot().sendMessage(chatId, "📋 የማስታወቂያ እርምጃዎች:", {
+          await bot().sendMessage(chatId, "📋 እርምጃዎች:", {
             reply_markup: {
               inline_keyboard: inlineKeyboard,
             },
