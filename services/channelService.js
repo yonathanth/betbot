@@ -83,7 +83,7 @@ function formatPostForChannel(post) {
   }
 
   // Hashtags section
-  message += `<b>ተመሣሣይ ቤቶች</b>\n`;
+  message += `<b>ተመሣሣይ ቤቶች                         </b>\n`;
 
   // Price range hashtag
   const priceHashtag = generatePriceHashtag(post.price);
@@ -231,7 +231,7 @@ function formatPostForPreview(post) {
   }
 
   // Hashtags section
-  message += `<b>ተመሣሣይ ቤቶች</b>\n`;
+  message += `<b>ተመሣሣይ ቤቶች                      </b>\n`;
 
   // Price range hashtag
   const priceHashtag = generatePriceHashtag(post.price);
@@ -613,10 +613,29 @@ module.exports = {
         ]);
       }
 
+      // Helper function to get channel link
+      const getChannelLink = () => {
+        // If channel username is provided, use it (most reliable)
+        if (process.env.CHANNEL_USERNAME) {
+          return `https://t.me/${process.env.CHANNEL_USERNAME}`;
+        }
+
+        // Otherwise, try to construct from channel ID
+        const channelId = process.env.CHANNEL_ID;
+        if (channelId) {
+          // Remove -100 prefix if present and construct link
+          const cleanId = channelId.replace("-100", "");
+          return `https://t.me/c/${cleanId}`;
+        }
+
+        // Fallback
+        return "https://t.me/";
+      };
+
       inlineKeyboard.push([
         {
           text: "🛖  ወደ ቻናሉ መመለስ",
-          url: `https://t.me/c/${process.env.CHANNEL_ID.replace("-100", "")}`,
+          url: getChannelLink(),
         },
       ]);
 
