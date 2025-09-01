@@ -1,0 +1,122 @@
+<% // Set the page content title = 'Users - BetBot Analytics'; currentPage =
+'users'; %>
+<div class="page-header">
+  <h2>👥 Users Analytics</h2>
+  <p>Manage and view user statistics and their posting activity</p>
+</div>
+
+<div class="data-table">
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Name</th>
+        <th>Type</th>
+        <th>Posts</th>
+        <th>Clicks</th>
+        <th>Joined</th>
+      </tr>
+    </thead>
+    <tbody id="users-table">
+      <tr>
+        <td colspan="6">Loading users...</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+  // Load users data
+  async function loadUsers() {
+    try {
+      const response = await fetch("/analytics/api/users");
+      const users = await response.json();
+      const tbody = document.getElementById("users-table");
+
+      if (users.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6">No users found</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = users
+        .map(
+          (user) =>
+            '<tr onclick="showUserPosts(' +
+            user.id +
+            ')">' +
+            "<td>" +
+            user.id +
+            "</td>" +
+            "<td>" +
+            (user.name || "No name") +
+            "</td>" +
+            "<td>" +
+            createUserTypeBadge(user.user_type) +
+            "</td>" +
+            "<td>" +
+            (user.posts_count || 0) +
+            "</td>" +
+            "<td>" +
+            (user.total_clicks || 0) +
+            "</td>" +
+            "<td>" +
+            formatDate(user.created_at) +
+            "</td>" +
+            "</tr>"
+        )
+        .join("");
+    } catch (error) {
+      console.error("Failed to load users:", error);
+      document.getElementById("users-table").innerHTML =
+        '<tr><td colspan="6" style="color: red;">Error loading users</td></tr>';
+    }
+  }
+
+  async function showUserPosts(userId) {
+    try {
+      showLoading();
+      const response = await fetch("/analytics/api/user/" + userId + "/posts");
+      const posts = await response.json();
+
+      let content = '<div class="data-table"><table><thead><tr>';
+      content +=
+        "<th>Title</th><th>Location</th><th>Status</th><th>Clicks</th><th>Created</th>";
+      content += "</tr></thead><tbody>";
+
+      if (posts.length === 0) {
+        content += '<tr><td colspan="5">No posts found for this user</td></tr>';
+      } else {
+        posts.forEach((post) => {
+          content +=
+            "<tr>" +
+            "<td>" +
+            (post.title || "No title") +
+            "</td>" +
+            "<td>" +
+            (post.location || "N/A") +
+            "</td>" +
+            "<td>" +
+            createStatusBadge(post.status) +
+            "</td>" +
+            "<td>" +
+            (post.total_clicks || 0) +
+            "</td>" +
+            "<td>" +
+            formatDate(post.created_at) +
+            "</td>" +
+            "</tr>";
+        });
+      }
+
+      content += "</tbody></table></div>";
+      showModal("User " + userId + " Posts", content);
+    } catch (error) {
+      console.error("Failed to load user posts:", error);
+      showModal("Error", "<p>Failed to load user posts</p>");
+    } finally {
+      hideLoading();
+    }
+  }
+
+  loadUsers();
+</script>

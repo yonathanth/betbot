@@ -147,6 +147,10 @@ async function initializeBot() {
       const app = express();
       app.use(express.json());
 
+      // Configure EJS templating
+      app.set("view engine", "ejs");
+      app.set("views", "analytics/public/views");
+
       const WEBHOOK_URL = `${process.env.WEBHOOK_URL}/webhook/${process.env.TELEGRAM_TOKEN}`;
       const PORT = process.env.PORT || 3000;
 
@@ -164,6 +168,13 @@ async function initializeBot() {
       app.get("/health", (req, res) => {
         res.json({ status: "ok", timestamp: new Date().toISOString() });
       });
+
+      // Analytics static files and routes
+      console.log("📊 Setting up analytics...");
+      app.use("/analytics", express.static("analytics/public"));
+      const analyticsRoutes = require("../analytics/routes/analyticsRoutes");
+      app.use("/analytics", analyticsRoutes);
+      console.log("✅ Analytics routes mounted at /analytics");
 
       // Start server
       server = app.listen(PORT, () => {
@@ -195,6 +206,31 @@ async function initializeBot() {
           console.log("🔄 Conflict detected - restarting...");
           restartPolling();
         }
+      });
+
+      // Development: Create Express server for analytics
+      console.log("📊 Setting up analytics for development...");
+      const app = express();
+      app.use(express.json());
+
+      // Configure EJS templating
+      app.set("view engine", "ejs");
+      app.set("views", "analytics/public/views");
+
+      // Analytics static files and routes
+      app.use("/analytics", express.static("analytics/public"));
+      const analyticsRoutes = require("../analytics/routes/analyticsRoutes");
+      app.use("/analytics", analyticsRoutes);
+      console.log("✅ Analytics routes mounted at /analytics");
+
+      // Health check endpoint
+      app.get("/health", (req, res) => {
+        res.json({ status: "ok", timestamp: new Date().toISOString() });
+      });
+
+      const PORT = process.env.PORT || 3000;
+      server = app.listen(PORT, () => {
+        console.log(`🌐 Development analytics server running on port ${PORT}`);
       });
     }
 

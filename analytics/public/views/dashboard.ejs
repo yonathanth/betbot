@@ -1,0 +1,62 @@
+<% // Set the page content title = 'Dashboard - BetBot Analytics'; currentPage =
+'dashboard'; %>
+<div class="page-header">
+  <h2>📊 Dashboard Overview</h2>
+  <p>Real-time insights into your property bot performance</p>
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <h3>Total Users</h3>
+    <div class="stat-value" id="total-users">Loading...</div>
+    <div class="stat-label">Active users</div>
+  </div>
+  <div class="stat-card">
+    <h3>Total Posts</h3>
+    <div class="stat-value" id="total-posts">Loading...</div>
+    <div class="stat-label">Published & rented</div>
+  </div>
+  <div class="stat-card">
+    <h3>Total Clicks</h3>
+    <div class="stat-value" id="total-clicks">Loading...</div>
+    <div class="stat-label">Contact interactions</div>
+  </div>
+</div>
+
+<div style="text-align: center; margin: 2rem 0">
+  <p style="color: #6c757d; margin-bottom: 1rem">Explore detailed analytics:</p>
+  <div
+    style="display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap"
+  >
+    <a href="/analytics/users" class="btn btn-primary">👥 View Users</a>
+    <a href="/analytics/posts" class="btn btn-primary">📋 View Posts</a>
+  </div>
+</div>
+
+<script>
+  // Load dashboard statistics
+  async function loadDashboardStats() {
+    try {
+      const response = await fetch("/analytics/api/stats");
+      const stats = await response.json();
+
+      document.getElementById("total-users").textContent =
+        stats.totalUsers || 0;
+      document.getElementById("total-posts").textContent =
+        stats.totalPosts || 0;
+      document.getElementById("total-clicks").textContent =
+        stats.totalClicks || 0;
+    } catch (error) {
+      console.error("Failed to load dashboard stats:", error);
+      const elements = ["total-users", "total-posts", "total-clicks"];
+      elements.forEach((id) => {
+        document.getElementById(id).textContent = "Error";
+        document.getElementById(id).style.color = "#f44336";
+      });
+    }
+  }
+
+  // Auto-refresh every 30 seconds
+  loadDashboardStats();
+  setInterval(loadDashboardStats, 30000);
+</script>

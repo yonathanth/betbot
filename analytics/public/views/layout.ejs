@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= title || 'BetBot Analytics' %></title>
+    <link rel="stylesheet" href="/analytics/css/analytics.css">
+</head>
+<body>
+    <header class="analytics-header">
+        <div class="header-container">
+            <div class="header-logo">
+                <h1>📊 BetBot Analytics</h1>
+                <p>Real-time property bot insights</p>
+            </div>
+            <nav class="header-nav">
+                <a href="/analytics/" class="<%= currentPage === 'dashboard' ? 'active' : '' %>">
+                    🏠 Dashboard
+                </a>
+                <a href="/analytics/users" class="<%= currentPage === 'users' ? 'active' : '' %>">
+                    👥 Users
+                </a>
+                <a href="/analytics/posts" class="<%= currentPage === 'posts' ? 'active' : '' %>">
+                    📋 Posts
+                </a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="main-content">
+        <div class="container">
+            <%- body %>
+        </div>
+    </main>
+
+    <!-- Modal Container -->
+    <div id="modal-overlay" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">Modal Title</h3>
+                <button id="modal-close" class="modal-close">&times;</button>
+            </div>
+            <div id="modal-body" class="modal-body">
+                <!-- Modal content will be inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <p>Loading...</p>
+        </div>
+    </div>
+
+    <script src="/analytics/js/analytics.js"></script>
+</body>
+</html>

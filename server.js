@@ -14,6 +14,17 @@ async function startServer() {
     setupRoutes();
 
     console.log("✅ betbot server started successfully!");
+
+    // Show analytics URL based on environment
+    const isProduction = process.env.NODE_ENV === "production";
+    if (isProduction) {
+      console.log(
+        "🌐 Analytics available at: https://betbot.shalop.com/analytics"
+      );
+    } else {
+      console.log("🌐 Analytics available at: http://localhost:7070/analytics");
+    }
+
     console.log("🤖 Bot is now ready to receive messages!");
   } catch (error) {
     console.error("❌ Failed to start server:", error.message);

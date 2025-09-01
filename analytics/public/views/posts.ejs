@@ -1,0 +1,126 @@
+<% // Set the page content title = 'Posts - BetBot Analytics'; currentPage =
+'posts'; %>
+<div class="page-header">
+  <h2>📋 Posts Analytics</h2>
+  <p>View and analyze property listings performance and engagement</p>
+</div>
+
+<div class="data-table">
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Title</th>
+        <th>User</th>
+        <th>Type</th>
+        <th>Status</th>
+        <th>Clicks</th>
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody id="posts-table">
+      <tr>
+        <td colspan="7">Loading posts...</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+  // Load posts data
+  async function loadPosts() {
+    try {
+      const response = await fetch("/analytics/api/posts");
+      const posts = await response.json();
+      const tbody = document.getElementById("posts-table");
+
+      if (posts.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7">No posts found</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = posts
+        .map(
+          (post) =>
+            '<tr onclick="showPostClickers(' +
+            post.id +
+            ')">' +
+            "<td>" +
+            post.id +
+            "</td>" +
+            "<td>" +
+            (post.title || "No title") +
+            "</td>" +
+            "<td>" +
+            (post.user_name || "Unknown") +
+            "</td>" +
+            "<td>" +
+            (post.property_type || "N/A") +
+            "</td>" +
+            "<td>" +
+            createStatusBadge(post.status) +
+            "</td>" +
+            "<td>" +
+            (post.total_clicks || 0) +
+            "</td>" +
+            "<td>" +
+            formatDate(post.created_at) +
+            "</td>" +
+            "</tr>"
+        )
+        .join("");
+    } catch (error) {
+      console.error("Failed to load posts:", error);
+      document.getElementById("posts-table").innerHTML =
+        '<tr><td colspan="7" style="color: red;">Error loading posts</td></tr>';
+    }
+  }
+
+  async function showPostClickers(postId) {
+    try {
+      showLoading();
+      const response = await fetch(
+        "/analytics/api/post/" + postId + "/clickers"
+      );
+      const clickers = await response.json();
+
+      let content = '<div class="data-table"><table><thead><tr>';
+      content +=
+        "<th>Name</th><th>Type</th><th>Click Type</th><th>Clicked At</th>";
+      content += "</tr></thead><tbody>";
+
+      if (clickers.length === 0) {
+        content +=
+          '<tr><td colspan="4">No clickers found for this post</td></tr>';
+      } else {
+        clickers.forEach((clicker) => {
+          content +=
+            "<tr>" +
+            "<td>" +
+            (clicker.name || "Unknown") +
+            "</td>" +
+            "<td>" +
+            createUserTypeBadge(clicker.user_type) +
+            "</td>" +
+            "<td>" +
+            (clicker.click_type || "contact") +
+            "</td>" +
+            "<td>" +
+            formatDateTime(clicker.clicked_at) +
+            "</td>" +
+            "</tr>";
+        });
+      }
+
+      content += "</tbody></table></div>";
+      showModal("Post " + postId + " Clickers", content);
+    } catch (error) {
+      console.error("Failed to load post clickers:", error);
+      showModal("Error", "<p>Failed to load post clickers</p>");
+    } finally {
+      hideLoading();
+    }
+  }
+
+  loadPosts();
+</script>
