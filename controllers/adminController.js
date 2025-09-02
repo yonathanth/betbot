@@ -500,7 +500,7 @@ async function processNoteInput(msg, state) {
             ],
             [
               {
-                text: "🏠 Back to Admin Dashboard",
+                text: "🛖 Back to Admin Dashboard",
                 callback_data: "admin_back_to_dashboard",
               },
             ],
