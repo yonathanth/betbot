@@ -327,6 +327,13 @@ function setupRoutes() {
         case "admin_rejection_reason":
           return adminController.handleRejectionReasonInput(msg);
 
+        // Admin token generation flow
+        case "admin_token_recovery_minutes":
+        case "admin_token_days":
+        case "admin_token_device_id":
+        case "admin_token_note":
+          return adminController.handleAdminTokenInput(msg);
+
         // Admin edit field inputs
         case "admin_edit_title":
         case "admin_edit_location":
@@ -555,6 +562,26 @@ function setupRoutes() {
     } else if (data === "admin_create_post") {
       await handleCallbackQuery(bot, query, async () => {
         await adminController.handleAdminCreatePost(query);
+      });
+    } else if (data === "admin_generate_token") {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleAdminGenerateToken(query);
+      });
+    } else if (data.startsWith("admin_token_type_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleAdminTokenTypeSelection(query);
+      });
+    } else if (data.startsWith("admin_token_mode_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleAdminTokenModeSelection(query);
+      });
+    } else if (data === "admin_token_skip_note") {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleAdminTokenSkipNote(query);
+      });
+    } else if (data === "admin_back_to_dashboard") {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleAdminBackToDashboard(query);
       });
     } else if (data === "admin_photo_add") {
       await handleCallbackQuery(bot, query, async () => {

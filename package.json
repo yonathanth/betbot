@@ -27,7 +27,8 @@
     "express": "^4.18.2",
     "moment": "^2.29.4",
     "mysql2": "^3.6.5",
-    "node-telegram-bot-api": "^0.64.0"
+    "node-telegram-bot-api": "^0.64.0",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

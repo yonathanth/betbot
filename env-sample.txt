@@ -1,0 +1,25 @@
+# Bot Configuration
+TELEGRAM_TOKEN=your_bot_token_here
+ADMIN_IDS=your_admin_telegram_id_here
+
+# Database Configuration
+DB_HOST=localhost
+DB_USER=your_db_username
+DB_PASSWORD=your_db_password
+DB_NAME=betbot
+
+# Token Generation Private Key (64 bytes Ed25519 private key, base64 encoded)
+TOKEN_PRIVATE_KEY=your_ed25519_private_key_here
+
+# Channel Configuration
+CHANNEL_ID=your_channel_id_here
+CHANNEL_USERNAME=your_channel_username_here
+
+# Bot Settings
+BOT_USERNAME=your_bot_username_here
+PREPOSTS=0
+REG=TRUE
+
+# Webhook Settings (for production)
+WEBHOOK_URL=your_webhook_url_here
+NODE_ENV=development

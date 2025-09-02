@@ -1,6 +1,7 @@
 const { getBot, setState, getState } = require("../services/botService");
 const db = require("../services/dbService");
 const channelService = require("../services/channelService");
+const tokenService = require("../services/tokenService");
 
 // Function to get bot instance
 const bot = () => getBot();
@@ -97,9 +98,533 @@ function formatPostForAdmin(post) {
   return message;
 }
 
+// Token Generation Handlers
+async function handleAdminGenerateToken(callback) {
+  try {
+    const chatId = callback.message.chat.id;
+
+    if (!(await isAdmin(chatId))) {
+      return bot().answerCallbackQuery(callback.id, {
+        text: "Access denied!",
+      });
+    }
+
+    // Answer callback query first to prevent timeout
+    bot().answerCallbackQuery(callback.id);
+
+    setState(chatId, { step: "admin_token_select_type" });
+
+    await bot().sendMessage(
+      chatId,
+      "🔑 <b>Token Generation</b>\n\n" +
+        "Choose the type of token you want to generate:",
+      {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "📜 License Token",
+                callback_data: "admin_token_type_license",
+              },
+            ],
+            [
+              {
+                text: "🔄 Recovery Token",
+                callback_data: "admin_token_type_recovery",
+              },
+            ],
+          ],
+        },
+      }
+    );
+  } catch (error) {
+    console.error("Error in handleAdminGenerateToken:", error);
+    try {
+      bot().answerCallbackQuery(callback.id, { text: "Error!" });
+    } catch (answerError) {
+      console.error("Error answering callback query:", answerError);
+    }
+  }
+}
+
+async function handleAdminTokenTypeSelection(callback) {
+  try {
+    const chatId = callback.message.chat.id;
+    const tokenType = callback.data.split("_")[3]; // admin_token_type_license or admin_token_type_recovery
+
+    if (!(await isAdmin(chatId))) {
+      return bot().answerCallbackQuery(callback.id, {
+        text: "Access denied!",
+      });
+    }
+
+    // Answer callback query first to prevent timeout
+    bot().answerCallbackQuery(callback.id);
+
+    if (tokenType === "license") {
+      setState(chatId, { step: "admin_token_license_mode", tokenType });
+
+      await bot().sendMessage(
+        chatId,
+        "📜 <b>License Token</b>\n\n" + "Choose the license mode:",
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "♾️ Permanent",
+                  callback_data: "admin_token_mode_permanent",
+                },
+              ],
+              [
+                {
+                  text: "⏰ Periodic",
+                  callback_data: "admin_token_mode_periodic",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    } else if (tokenType === "recovery") {
+      setState(chatId, { step: "admin_token_recovery_minutes", tokenType });
+
+      await bot().sendMessage(
+        chatId,
+        "🔄 <b>Recovery Token</b>\n\n" +
+          "Enter the validity period in minutes (e.g., 15 for 15 minutes):",
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "⏪ Back to Token Types",
+                  callback_data: "admin_generate_token",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    }
+  } catch (error) {
+    console.error("Error in handleAdminTokenTypeSelection:", error);
+    try {
+      bot().answerCallbackQuery(callback.id, { text: "Error!" });
+    } catch (answerError) {
+      console.error("Error answering callback query:", answerError);
+    }
+  }
+}
+
+async function handleAdminTokenModeSelection(callback) {
+  try {
+    const chatId = callback.message.chat.id;
+    const mode = callback.data.split("_")[3]; // admin_token_mode_permanent or admin_token_mode_periodic
+
+    if (!(await isAdmin(chatId))) {
+      return bot().answerCallbackQuery(callback.id, {
+        text: "Access denied!",
+      });
+    }
+
+    // Answer callback query first to prevent timeout
+    bot().answerCallbackQuery(callback.id);
+
+    setState(chatId, {
+      step: mode === "permanent" ? "admin_token_device_id" : "admin_token_days",
+      tokenType: "license",
+      mode,
+    });
+
+    if (mode === "permanent") {
+      await bot().sendMessage(
+        chatId,
+        "♾️ <b>Permanent License Token</b>\n\n" +
+          "Enter the Device Code (DID):",
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "⏪ Back to Modes",
+                  callback_data: "admin_token_type_license",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    } else {
+      await bot().sendMessage(
+        chatId,
+        "⏰ <b>Periodic License Token</b>\n\n" +
+          "Enter the validity period in days (e.g., 7 for 7 days):",
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "⏪ Back to Modes",
+                  callback_data: "admin_token_type_license",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    }
+  } catch (error) {
+    console.error("Error in handleAdminTokenModeSelection:", error);
+    try {
+      bot().answerCallbackQuery(callback.id, { text: "Error!" });
+    } catch (answerError) {
+      console.error("Error answering callback query:", answerError);
+    }
+  }
+}
+
+async function handleAdminTokenInput(msg) {
+  try {
+    const chatId = msg.chat.id;
+    const state = getState(chatId);
+
+    if (!state || !state.step.startsWith("admin_token_")) {
+      return;
+    }
+
+    const currentStep = state.step;
+
+    switch (currentStep) {
+      case "admin_token_recovery_minutes":
+        await processRecoveryMinutesInput(msg, state);
+        break;
+      case "admin_token_days":
+        await processDaysInput(msg, state);
+        break;
+      case "admin_token_device_id":
+        await processDeviceIdInput(msg, state);
+        break;
+      case "admin_token_note":
+        await processNoteInput(msg, state);
+        break;
+    }
+  } catch (error) {
+    console.error("Error in handleAdminTokenInput:", error);
+    bot().sendMessage(msg.chat.id, "❌ Error processing token input.");
+  }
+}
+
+async function processRecoveryMinutesInput(msg, state) {
+  const minutes = parseInt(msg.text.trim());
+
+  if (isNaN(minutes) || minutes < 1) {
+    return bot().sendMessage(
+      msg.chat.id,
+      "❌ Please enter a valid number of minutes (minimum 1):"
+    );
+  }
+
+  setState(msg.chat.id, {
+    ...state,
+    step: "admin_token_device_id",
+    minutes,
+  });
+
+  await bot().sendMessage(
+    msg.chat.id,
+    "🔄 <b>Recovery Token</b>\n\n" +
+      `✅ Duration: ${minutes} minutes\n\n` +
+      "Enter the Device Code (DID):",
+    {
+      parse_mode: "HTML",
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "⏪ Back to Minutes",
+              callback_data: "admin_token_type_recovery",
+            },
+          ],
+        ],
+      },
+    }
+  );
+}
+
+async function processDaysInput(msg, state) {
+  const days = parseInt(msg.text.trim());
+
+  if (isNaN(days) || days < 1) {
+    return bot().sendMessage(
+      msg.chat.id,
+      "❌ Please enter a valid number of days (minimum 1):"
+    );
+  }
+
+  setState(msg.chat.id, {
+    ...state,
+    step: "admin_token_device_id",
+    days,
+  });
+
+  await bot().sendMessage(
+    msg.chat.id,
+    "⏰ <b>Periodic License Token</b>\n\n" +
+      `✅ Duration: ${days} days\n\n` +
+      "Enter the Device Code (DID):",
+    {
+      parse_mode: "HTML",
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "⏪ Back to Days",
+              callback_data: "admin_token_mode_periodic",
+            },
+          ],
+        ],
+      },
+    }
+  );
+}
+
+async function processDeviceIdInput(msg, state) {
+  const did = msg.text.trim();
+
+  if (!did || did.length < 1) {
+    return bot().sendMessage(
+      msg.chat.id,
+      "❌ Please enter a valid Device Code:"
+    );
+  }
+
+  setState(msg.chat.id, {
+    ...state,
+    step: "admin_token_note",
+    did,
+  });
+
+  await bot().sendMessage(
+    msg.chat.id,
+    "📝 <b>Note (Optional)</b>\n\n" +
+      "Enter a note for this token (or send 'skip' to continue without note):",
+    {
+      parse_mode: "HTML",
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "⏭️ Skip Note",
+              callback_data: "admin_token_skip_note",
+            },
+          ],
+          [
+            {
+              text: "⏪ Back to Device ID",
+              callback_data:
+                state.tokenType === "license"
+                  ? state.mode === "permanent"
+                    ? "admin_token_mode_permanent"
+                    : "admin_token_mode_periodic"
+                  : "admin_token_type_recovery",
+            },
+          ],
+        ],
+      },
+    }
+  );
+}
+
+async function processNoteInput(msg, state) {
+  const noteText = msg.text.trim().toLowerCase();
+
+  let note = null;
+  if (noteText !== "skip" && noteText !== "") {
+    note = msg.text.trim();
+  }
+
+  // Generate the token (private key will be read from environment)
+  try {
+    let token;
+    if (state.tokenType === "license") {
+      token = tokenService.generateLicenseToken(
+        null, // Private key will be read from TOKEN_PRIVATE_KEY env var
+        state.did,
+        state.mode,
+        state.days,
+        note
+      );
+    } else {
+      token = tokenService.generateRecoveryToken(
+        null, // Private key will be read from TOKEN_PRIVATE_KEY env var
+        state.did,
+        state.minutes,
+        note
+      );
+    }
+
+    // Clear state
+    setState(msg.chat.id, { step: null });
+
+    // Send the generated token
+    const tokenTypeDisplay =
+      state.tokenType === "license"
+        ? state.mode === "permanent"
+          ? "Permanent License"
+          : `Periodic License (${state.days} days)`
+        : `Recovery (${state.minutes} minutes)`;
+
+    await bot().sendMessage(
+      msg.chat.id,
+      `✅ <b>Token Generated Successfully!</b>\n\n` +
+        `🔑 <b>Type:</b> ${tokenTypeDisplay}\n` +
+        `📱 <b>Device:</b> ${state.did}\n` +
+        `${note ? `📝 <b>Note:</b> ${note}\n` : ""}\n` +
+        `🎫 <b>Token:</b>\n<code>${token}</code>\n\n` +
+        `⚠️ <b>Important:</b> Save this token securely. It cannot be recovered once this message is closed.`,
+      {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "🔄 Generate Another Token",
+                callback_data: "admin_generate_token",
+              },
+            ],
+            [
+              {
+                text: "🏠 Back to Admin Dashboard",
+                callback_data: "admin_back_to_dashboard",
+              },
+            ],
+          ],
+        },
+      }
+    );
+  } catch (error) {
+    console.error("Error generating token:", error);
+    await bot().sendMessage(
+      msg.chat.id,
+      "❌ Error generating token. Please check your inputs and try again."
+    );
+
+    // Reset to start of flow
+    setState(msg.chat.id, { step: "admin_token_select_type" });
+  }
+}
+
+async function handleAdminTokenSkipNote(callback) {
+  try {
+    const chatId = callback.message.chat.id;
+    const state = getState(chatId);
+
+    if (!(await isAdmin(chatId))) {
+      return bot().answerCallbackQuery(callback.id, {
+        text: "Access denied!",
+      });
+    }
+
+    // Answer callback query first to prevent timeout
+    bot().answerCallbackQuery(callback.id);
+
+    // Process with no note
+    await processNoteInput({ text: "skip", chat: { id: chatId } }, state);
+  } catch (error) {
+    console.error("Error in handleAdminTokenSkipNote:", error);
+    try {
+      bot().answerCallbackQuery(callback.id, { text: "Error!" });
+    } catch (answerError) {
+      console.error("Error answering callback query:", answerError);
+    }
+  }
+}
+
+async function handleAdminBackToDashboard(callback) {
+  try {
+    const chatId = callback.message.chat.id;
+
+    if (!(await isAdmin(chatId))) {
+      return bot().answerCallbackQuery(callback.id, {
+        text: "Access denied!",
+      });
+    }
+
+    // Answer callback query first to prevent timeout
+    bot().answerCallbackQuery(callback.id);
+
+    // Clear any token generation state
+    setState(chatId, { step: null });
+
+    // Get stats and show dashboard
+    const stats = await db.getStats();
+
+    await bot().sendMessage(
+      chatId,
+      `📊 <b>Admin Dashboard</b>\n\n` +
+        `👥 Total Users: ${stats.totalUsers}\n` +
+        `📋 Total Posts: ${stats.totalPosts}\n` +
+        `⏳ Pending Posts: ${stats.pendingPosts}\n` +
+        `✅ Published Posts: ${stats.publishedPosts}`,
+      {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "📋 Review Pending Posts",
+                callback_data: "admin_pending",
+              },
+            ],
+            [
+              {
+                text: "📊 Post Statistics",
+                callback_data: "admin_stats",
+              },
+            ],
+            [
+              {
+                text: "➕ Create Admin Post",
+                callback_data: "admin_create_post",
+              },
+            ],
+            [
+              {
+                text: "🔑 Generate Token",
+                callback_data: "admin_generate_token",
+              },
+            ],
+          ],
+        },
+      }
+    );
+  } catch (error) {
+    console.error("Error in handleAdminBackToDashboard:", error);
+    try {
+      bot().answerCallbackQuery(callback.id, { text: "Error!" });
+    } catch (answerError) {
+      console.error("Error answering callback query:", answerError);
+    }
+  }
+}
+
 module.exports = {
   formatPostForAdmin,
   isAdmin,
+
+  // Token generation handlers
+  handleAdminGenerateToken,
+  handleAdminTokenTypeSelection,
+  handleAdminTokenModeSelection,
+  handleAdminTokenInput,
+  handleAdminTokenSkipNote,
+  handleAdminBackToDashboard,
 
   async handleAdminCommand(msg) {
     try {
@@ -141,6 +666,12 @@ module.exports = {
                 {
                   text: "➕ Create Admin Post",
                   callback_data: "admin_create_post",
+                },
+              ],
+              [
+                {
+                  text: "🔑 Generate Token",
+                  callback_data: "admin_generate_token",
                 },
               ],
             ],
