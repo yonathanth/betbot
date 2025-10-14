@@ -238,7 +238,7 @@ module.exports = {
         FROM posts p
         JOIN users u ON p.user_id = u.id
         WHERE p.status = 'pending'
-        ORDER BY p.created_at ASC
+        ORDER BY p.created_at DESC
       `);
       return rows;
     } catch (error) {

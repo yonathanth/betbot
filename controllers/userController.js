@@ -249,20 +249,113 @@ module.exports = {
         // Return to main menu
         return this.showMainMenu(chatId);
       }
+      const pageSize = 10;
+      return this.renderMyAdsPage(chatId, posts, 1, pageSize);
+    } catch (error) {
+      console.error("Error in showMyAds:", error);
+      bot().sendMessage(chatId, "❌ ማስታወቂያዎች ማምጣት አልተቻለም");
+    }
+  },
 
-      let message = `📋 <b>የእርስዎ ማስታወቂያዎች (${posts.length})</b>\n\n`;
+  async renderMyAdsPage(chatId, posts, page, pageSize) {
+    const total = posts.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const currentPage = Math.min(Math.max(1, page), totalPages);
+    const start = (currentPage - 1) * pageSize;
+    const end = Math.min(start + pageSize, total);
+    const slice = posts.slice(start, end);
 
-      posts.forEach((post, index) => {
+    let message = `📋 <b>የእርስዎ ማስታወቂያዎች (${total})</b>\n`;
+    message += `📄 Page ${currentPage}/${totalPages}\n\n`;
+
+    const preposts = parseInt(process.env.PREPOSTS) || 0;
+
+    slice.forEach((post, idx) => {
+      const statusEmoji = this.getStatusEmoji(post.status);
+      const createdDate = new Date(post.created_at).toLocaleDateString("am-ET");
+      const displayId = post.id + preposts;
+      const num = start + idx + 1;
+
+      message += `${num}. ${statusEmoji} <b>ፓስት ID ${displayId}</b> - ${
+        post.title || "አልታወቀም"
+      }\n`;
+      message += `   📍 ${post.location || "አልታወቀም"}\n`;
+      message += `   💰 ${post.price || "አልታወቀም"}\n`;
+      message += `   👆 ${post.total_clicks} ሰው ስልኮን አይቶታል\n`;
+      message += `   📅 ${createdDate}\n\n`;
+    });
+
+    message += `💡 <b>ከነዚህ መሃል የተከራየ ቤት ካሎት ለኛ ላማሳወቅ:</b>\n`;
+    message += `Post ID ውን ያስገቡ...\n\n`;
+
+    const keyboard = [];
+    const navRow = [];
+    if (currentPage > 1) {
+      navRow.push({
+        text: "⬅️ Prev",
+        callback_data: `my_ads_page_${currentPage - 1}`,
+      });
+    }
+    if (currentPage < totalPages) {
+      navRow.push({
+        text: "Next ➡️",
+        callback_data: `my_ads_page_${currentPage + 1}`,
+      });
+    }
+    if (navRow.length) keyboard.push(navRow);
+
+    keyboard.push([
+      { text: "🔄 Refresh List", callback_data: "refresh_my_ads" },
+    ]);
+    keyboard.push([
+      { text: "🛖 ወደ ዋና ማውጫ ይመለሱ", callback_data: "back_to_main_menu" },
+    ]);
+
+    await bot().sendMessage(chatId, message, {
+      parse_mode: "HTML",
+      reply_markup: { inline_keyboard: keyboard },
+    });
+
+    setState(chatId, { step: "waiting_rent_post_id" });
+  },
+
+  async handleMyAdsPagination(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+      const parts = callback.data.split("_"); // my_ads_page_2
+      const page = parseInt(parts[3]) || 1;
+
+      bot().answerCallbackQuery(callback.id);
+
+      const posts = await db.getUserPosts(chatId);
+      if (!posts.length) {
+        return bot().editMessageText("📋 ምንም ማስታወቂያ አልተገኘም", {
+          chat_id: chatId,
+          message_id: callback.message.message_id,
+        });
+      }
+
+      const pageSize = 10;
+      const total = posts.length;
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      const currentPage = Math.min(Math.max(1, page), totalPages);
+      const start = (currentPage - 1) * pageSize;
+      const end = Math.min(start + pageSize, total);
+      const slice = posts.slice(start, end);
+
+      let message = `📋 <b>የእርስዎ ማስታወቂያዎች (${total})</b>\n`;
+      message += `📄 Page ${currentPage}/${totalPages}\n\n`;
+
+      const preposts = parseInt(process.env.PREPOSTS) || 0;
+      slice.forEach((post, idx) => {
         const statusEmoji = this.getStatusEmoji(post.status);
         const createdDate = new Date(post.created_at).toLocaleDateString(
           "am-ET"
         );
-
-        // Use display ID with PREPOSTS offset
-        const preposts = parseInt(process.env.PREPOSTS) || 0;
         const displayId = post.id + preposts;
+        const num = start + idx + 1;
 
-        message += `${index + 1}. ${statusEmoji} <b>ፓስት ID ${displayId}</b> - ${
+        message += `${num}. ${statusEmoji} <b>ፓስት ID ${displayId}</b> - ${
           post.title || "አልታወቀም"
         }\n`;
         message += `   📍 ${post.location || "አልታወቀም"}\n`;
@@ -271,38 +364,41 @@ module.exports = {
         message += `   📅 ${createdDate}\n\n`;
       });
 
-      message += `💡 <b>ከነዚህ መሃል የተከራየ ቤት ካሎት ለኛ ላማሳወቅ:</b>\n`;
-      message += `Post ID ውን ያስገቡ (ለምሳሌ: ${
-        posts.length > 0
-          ? posts[0].id + (parseInt(process.env.PREPOSTS) || 0)
-          : (parseInt(process.env.PREPOSTS) || 0) + 123
-      })\n\n`;
+      const keyboard = [];
+      const navRow = [];
+      if (currentPage > 1) {
+        navRow.push({
+          text: "⬅️ Prev",
+          callback_data: `my_ads_page_${currentPage - 1}`,
+        });
+      }
+      if (currentPage < totalPages) {
+        navRow.push({
+          text: "Next ➡️",
+          callback_data: `my_ads_page_${currentPage + 1}`,
+        });
+      }
+      if (navRow.length) keyboard.push(navRow);
+      keyboard.push([
+        { text: "🔄 Refresh List", callback_data: "refresh_my_ads" },
+      ]);
+      keyboard.push([
+        { text: "🛖 ወደ ዋና ማውጫ ይመለሱ", callback_data: "back_to_main_menu" },
+      ]);
 
-      await bot().sendMessage(chatId, message, {
+      await bot().editMessageText(message, {
+        chat_id: chatId,
+        message_id: callback.message.message_id,
         parse_mode: "HTML",
-        reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: "🔄 Refresh List",
-                callback_data: "refresh_my_ads",
-              },
-            ],
-            [
-              {
-                text: "🛖 ወደ ዋና ማውጫ ይመለሱ",
-                callback_data: "back_to_main_menu",
-              },
-            ],
-          ],
-        },
+        reply_markup: { inline_keyboard: keyboard },
       });
 
-      // Set state to wait for post ID input for rent marking
       setState(chatId, { step: "waiting_rent_post_id" });
     } catch (error) {
-      console.error("Error in showMyAds:", error);
-      bot().sendMessage(chatId, "❌ ማስታወቂያዎች ማምጣት አልተቻለም");
+      console.error("Error in handleMyAdsPagination:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "Error!" });
+      } catch (e) {}
     }
   },
 

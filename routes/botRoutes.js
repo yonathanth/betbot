@@ -437,6 +437,14 @@ function setupRoutes() {
       await handleCallbackQuery(bot, query, async () => {
         await userController.handleRefreshMyAds(query);
       });
+    } else if (data.startsWith("my_ads_page_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        await userController.handleMyAdsPagination(query);
+      });
+    } else if (data.startsWith("admin_pending_page_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handlePendingPageNav(query);
+      });
     } else if (data.startsWith("mark_rented_")) {
       await handleCallbackQuery(bot, query, async () => {
         await userController.handleMarkAsRented(query);

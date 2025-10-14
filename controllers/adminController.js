@@ -888,69 +888,142 @@ module.exports = {
         });
       }
 
-      for (const post of posts) {
-        const message = formatPostForAdmin(post);
-
-        // Get photos for this post
-        const photos = await db.getPostPhotos(post.id);
-
-        if (photos && photos.length > 0) {
-          // Send media as media group with the post details as caption on first item
-          const mediaGroup = photos.map((photo, index) => ({
-            type:
-              photo.file_type === "video"
-                ? "video"
-                : photo.file_type === "document"
-                ? "document"
-                : "photo",
-            media: photo.telegram_file_id,
-            caption: index === 0 ? message : undefined,
-            parse_mode: index === 0 ? "HTML" : undefined,
-          }));
-
-          await bot().sendMediaGroup(chatId, mediaGroup);
-
-          // Send approval buttons as separate message
-          const preposts = parseInt(process.env.PREPOSTS) || 0;
-          const displayId = post.id + preposts;
-
-          await bot().sendMessage(
-            chatId,
-            `📋 Post ID: ${displayId} - Actions:`,
-            {
-              reply_markup: {
-                inline_keyboard: [
-                  [
-                    { text: "✅ Approve", callback_data: `approve_${post.id}` },
-                    { text: "✏️ Edit", callback_data: `edit_${post.id}` },
-                  ],
-                  [{ text: "❌ Reject", callback_data: `reject_${post.id}` }],
-                ],
-              },
-            }
-          );
-        } else {
-          // Send text-only message with inline buttons
-          await bot().sendMessage(chatId, message, {
-            parse_mode: "HTML",
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: "✅ Approve", callback_data: `approve_${post.id}` },
-                  { text: "✏️ Edit", callback_data: `edit_${post.id}` },
-                ],
-                [{ text: "❌ Reject", callback_data: `reject_${post.id}` }],
-              ],
-            },
-          });
-        }
-      }
+      // Save IDs and show first page (5 per page)
+      const pageSize = 5;
+      const pendingIds = posts.map((p) => p.id);
+      setState(chatId, { pendingPostIds: pendingIds, pendingPage: 1 });
+      await this.renderPendingPostsPage(chatId, pendingIds, 1, pageSize);
     } catch (error) {
       console.error("Error in showPendingPosts:", error);
       try {
         bot().answerCallbackQuery(callback.id, {
           text: "Error loading posts!",
         });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  async renderPendingPostsPage(chatId, pendingIds, page, pageSize) {
+    const total = pendingIds.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const currentPage = Math.min(Math.max(1, page), totalPages);
+    const start = (currentPage - 1) * pageSize;
+    const end = Math.min(start + pageSize, total);
+
+    // Send each post in this page one by one (media + actions)
+    for (let i = start; i < end; i++) {
+      const postId = pendingIds[i];
+      const post = await db.getPost(postId);
+      if (!post) continue;
+
+      const message = formatPostForAdmin(post);
+      const photos = await db.getPostPhotos(post.id);
+
+      const preposts = parseInt(process.env.PREPOSTS) || 0;
+      const displayId = post.id + preposts;
+
+      const actionKeyboard = {
+        inline_keyboard: [
+          [
+            { text: "✅ Approve", callback_data: `approve_${post.id}` },
+            { text: "✏️ Edit", callback_data: `edit_${post.id}` },
+          ],
+          [{ text: "❌ Reject", callback_data: `reject_${post.id}` }],
+        ],
+      };
+
+      if (photos && photos.length > 0) {
+        const mediaGroup = photos.map((photo, index) => ({
+          type:
+            photo.file_type === "video"
+              ? "video"
+              : photo.file_type === "document"
+              ? "document"
+              : "photo",
+          media: photo.telegram_file_id,
+          caption: index === 0 ? message : undefined,
+          parse_mode: index === 0 ? "HTML" : undefined,
+        }));
+        await bot().sendMediaGroup(chatId, mediaGroup);
+        await bot().sendMessage(chatId, `📋 Post ID: ${displayId} - Actions:`, {
+          reply_markup: actionKeyboard,
+        });
+      } else {
+        await bot().sendMessage(chatId, message, {
+          parse_mode: "HTML",
+          reply_markup: actionKeyboard,
+        });
+      }
+    }
+
+    // Send navigation controller message
+    const navRow = [];
+    if (currentPage > 1) {
+      navRow.push({
+        text: "⬅️ Prev",
+        callback_data: `admin_pending_page_${currentPage - 1}`,
+      });
+    }
+    if (currentPage < totalPages) {
+      navRow.push({
+        text: "Next ➡️",
+        callback_data: `admin_pending_page_${currentPage + 1}`,
+      });
+    }
+
+    const keyboard = [];
+    if (navRow.length) keyboard.push(navRow);
+    keyboard.push([
+      { text: "📊 Admin Dashboard", callback_data: "admin_back_to_dashboard" },
+    ]);
+
+    await bot().sendMessage(
+      chatId,
+      `⏳ Pending posts: Page ${currentPage}/${totalPages} (${total} total)`,
+      { reply_markup: { inline_keyboard: keyboard } }
+    );
+
+    // Save current page
+    const state = getState(chatId) || {};
+    setState(chatId, { ...state, pendingPage: currentPage });
+  },
+
+  async handlePendingPageNav(callback) {
+    try {
+      const chatId = callback.message.chat.id;
+
+      if (!(await isAdmin(chatId))) {
+        return bot().answerCallbackQuery(callback.id, {
+          text: "Access denied!",
+        });
+      }
+
+      bot().answerCallbackQuery(callback.id);
+
+      const state = getState(chatId) || {};
+      const ids = state.pendingPostIds || [];
+      if (!ids.length) {
+        // Rebuild list if state lost
+        const posts = await db.getPendingPosts();
+        if (!posts.length) {
+          return bot().sendMessage(
+            chatId,
+            "📭 No pending posts at the moment."
+          );
+        }
+        setState(chatId, { ...state, pendingPostIds: posts.map((p) => p.id) });
+      }
+
+      const page = parseInt(callback.data.split("_").pop()) || 1;
+      const pageSize = 5;
+      const useIds = getState(chatId)?.pendingPostIds || ids;
+      await this.renderPendingPostsPage(chatId, useIds, page, pageSize);
+    } catch (error) {
+      console.error("Error in handlePendingPageNav:", error);
+      try {
+        bot().answerCallbackQuery(callback.id, { text: "Error!" });
       } catch (answerError) {
         console.error("Error answering callback query:", answerError);
       }
@@ -970,6 +1043,32 @@ module.exports = {
       }
 
       if (action === "approve") {
+        // Idempotency guard: if already published, no-op with feedback
+        try {
+          const existing = await db.getPost(postId);
+          if (existing && existing.status === "published") {
+            await bot().answerCallbackQuery(callback.id, {
+              text: "Already published.",
+            });
+            try {
+              await bot().editMessageText(
+                callback.message.text + "\n\nℹ️ <b>ALREADY PUBLISHED</b>",
+                {
+                  chat_id: chatId,
+                  message_id: callback.message.message_id,
+                  parse_mode: "HTML",
+                }
+              );
+            } catch (e) {
+              // ignore edit failures (message might be unchanged or not editable)
+            }
+            return;
+          }
+        } catch (e) {
+          // If checking status fails, proceed with normal flow
+          console.error("Approval idempotency check failed:", e);
+        }
+
         await db.updatePostStatus(postId, "approved");
         await channelService.publishToChannel(postId);
 

@@ -349,6 +349,14 @@ module.exports = {
         throw new Error(`Post ${postId} not found`);
       }
 
+      // Idempotency guard: if already published and we have a channel message, skip republishing
+      if (post.status === "published" && post.channel_message_id) {
+        console.log(
+          `Post #${postId} already published (message ${post.channel_message_id}), skipping`
+        );
+        return;
+      }
+
       const formattedPost = formatPostForChannel(post);
       const photos = await db.getPostPhotos(postId);
 
