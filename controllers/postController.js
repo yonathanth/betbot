@@ -939,7 +939,7 @@ module.exports = {
             inline_keyboard: [
               [
                 {
-                  text: "⏭️ ወደ ተጨማሪ ምስሎች",
+                  text: "⏭️ ዝለል",
                   callback_data: "cover_photo_done",
                 },
               ],
@@ -1213,7 +1213,7 @@ module.exports = {
             inline_keyboard: [
               [
                 {
-                  text: "⏭️ ወደ ተጨማሪ ምስሎች",
+                  text: "⏭️ ዝለል",
                   callback_data: "cover_photo_done",
                 },
               ],
