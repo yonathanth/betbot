@@ -812,6 +812,25 @@ module.exports = {
             }
           }
 
+          // Helper function to get channel link (same as main function)
+          const getChannelLink = () => {
+            // If channel username is provided, use it (most reliable)
+            if (process.env.CHANNEL_USERNAME) {
+              return `https://t.me/${process.env.CHANNEL_USERNAME}`;
+            }
+
+            // Otherwise, try to construct from channel ID
+            const channelId = process.env.CHANNEL_ID;
+            if (channelId) {
+              // Remove -100 prefix if present and construct link
+              const cleanId = channelId.replace("-100", "");
+              return `https://t.me/c/${cleanId}`;
+            }
+
+            // Fallback
+            return "https://t.me/";
+          };
+
           const fallbackMessage = `<b>አከራይ/ደላላ:</b>\n\n<b>${contactName}</b>\n<b>📞 </b>${fallbackContactInfo}\n\n<i>አከራይ/ደላላውን በቀጥታ ለመጠየቅ በቦት ላይ ይመዝግቡ</i>`;
 
           await bot().sendMessage(userId, fallbackMessage, {
@@ -820,8 +839,8 @@ module.exports = {
               inline_keyboard: [
                 [
                   {
-                    text: "🤖 ቦትን ይጀምሩ",
-                    url: `https://t.me/${process.env.BOT_USERNAME}`,
+                    text: "🛖 ወደ ቻናሉ መመለስ",
+                    url: getChannelLink(),
                   },
                 ],
                 [
