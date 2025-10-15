@@ -627,7 +627,7 @@ module.exports = {
       // Prepare contact information
       const contactName = post.display_name || post.user_name || "የማይታወቅ";
       let contactInfo = `<b>አከራይ/ደላላ:</b>\n\n`;
-      contactInfo += `<b>👨🏽‍💼 ${contactName}</b>\n`;
+      contactInfo += `<b>${contactName}</b>\n`;
 
       if (post.contact_info) {
         contactInfo += `<b>📞 </b>${post.contact_info}\n\n`;
@@ -696,16 +696,16 @@ module.exports = {
   },
 
   async sendCombinedContactMessage(userId, post) {
-    try {
-      // Prepare contact information
-      const contactName = post.display_name || post.user_name || "የማይታወቅ";
+    // Prepare contact information (moved outside try block for error handling access)
+    const contactName = post.display_name || post.user_name || "የማይታወቅ";
+    const contactPhone = post.contact_info || post.phone;
 
+    try {
       // Removed welcome message - show broker info directly
       let combinedMessage = `<b>አከራይ/ደላላ:</b>\n\n`;
       combinedMessage += `<b>${contactName}</b>\n`;
 
       // Format phone number to international and make it clickable
-      const contactPhone = post.contact_info || post.phone;
       let internationalPhone = null;
 
       if (contactPhone) {
@@ -785,6 +785,63 @@ module.exports = {
       );
     } catch (error) {
       console.error("Error sending combined contact message:", error);
+
+      // Handle specific privacy restriction error
+      if (
+        error.code === "ETELEGRAM" &&
+        error.response?.body?.description?.includes(
+          "BUTTON_USER_PRIVACY_RESTRICTED"
+        )
+      ) {
+        console.log(
+          `⚠️ User ${userId} has privacy restrictions for user mention buttons`
+        );
+
+        // Send message without the user mention button
+        try {
+          // Create contact info for fallback message
+          let fallbackContactInfo = "";
+
+          if (contactPhone) {
+            const internationalPhone =
+              this.formatPhoneToInternational(contactPhone);
+            if (internationalPhone) {
+              fallbackContactInfo = `<a href="tel:${internationalPhone}">${internationalPhone}</a>`;
+            } else {
+              fallbackContactInfo = contactPhone;
+            }
+          }
+
+          const fallbackMessage = `<b>አከራይ/ደላላ:</b>\n\n<b>${contactName}</b>\n<b>📞 </b>${fallbackContactInfo}\n\n<i>አከራይ/ደላላውን በቀጥታ ለመጠየቅ በቦት ላይ ይመዝግቡ</i>`;
+
+          await bot().sendMessage(userId, fallbackMessage, {
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "🤖 ቦትን ይጀምሩ",
+                    url: `https://t.me/${process.env.BOT_USERNAME}`,
+                  },
+                ],
+                [
+                  {
+                    text: "➕ የራሶን ቤት ለማስታወቅ",
+                    callback_data: "start_my_listing",
+                  },
+                ],
+              ],
+            },
+          });
+
+          console.log(
+            `✅ Fallback contact message sent to user ${userId} for post ${post.id}`
+          );
+          return;
+        } catch (fallbackError) {
+          console.error("Fallback error:", fallbackError);
+        }
+      }
 
       // If private message fails, user may need to start the bot first
       try {
