@@ -1217,6 +1217,12 @@ module.exports = {
                   callback_data: "cover_photo_done",
                 },
               ],
+              [
+                {
+                  text: "✅ ጨርሻለሁ",
+                  callback_data: "finish_additional_photos",
+                },
+              ],
             ],
           },
         }
