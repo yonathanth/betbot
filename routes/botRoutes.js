@@ -135,6 +135,45 @@ function setupRoutes() {
       return;
     }
 
+    // Handle deep link for media viewing requests
+    if (parameter && parameter.startsWith("media_")) {
+      const postId = parameter.split("_")[1];
+
+      try {
+        // Get post details
+        const post = await require("../services/dbService").getPost(postId);
+        if (post) {
+          // Record the click
+          await require("../services/dbService").recordClick(
+            postId,
+            msg.from.id,
+            "media"
+          );
+
+          // Send additional media to user
+          await require("../services/channelService").handleMediaViewingRequest(
+            msg.from.id,
+            postId
+          );
+        } else {
+          await bot.sendMessage(chatId, "❌ ማስታወቂያው አልተገኘም!");
+        }
+      } catch (error) {
+        console.error("Error handling media deep link:", error);
+        try {
+          await bot.sendMessage(
+            chatId,
+            "❌ ተጨማሪ ምስሎች ማምጣት ተሳንቷል። እባክዎ እንደገና ይሞክሩ።"
+          );
+        } catch (fallbackError) {
+          console.error("Fallback error:", fallbackError);
+        }
+      }
+
+      // ALWAYS return for media requests - never proceed to regular start flow
+      return;
+    }
+
     // Regular start command handling
     await require("../controllers/userController").startHandler(msg);
   });
@@ -206,6 +245,8 @@ function setupRoutes() {
             msg.document.mime_type.startsWith("image/")) ||
           (msg.video && msg.video.file_size <= 50 * 1024 * 1024)) && // 50MB limit for videos
         (state?.step === "get_photos" ||
+          state?.step === "get_cover_photo" ||
+          state?.step === "get_additional_photos" ||
           state?.step === "admin_photo_upload" ||
           state?.step === "user_photo_upload")
       ) {
@@ -225,7 +266,19 @@ function setupRoutes() {
             return postController.handleUserPhotoUpload(msg);
           }
         }
-        // Regular user photo upload handling
+        // Cover photo upload handling
+        else if (state?.step === "get_cover_photo") {
+          return postController.handleCoverPhotoUpload(msg);
+        }
+        // Additional photos upload handling
+        else if (state?.step === "get_additional_photos") {
+          if (msg.media_group_id) {
+            return postController.handleAdditionalPhotoUpload(msg);
+          } else {
+            return postController.handleAdditionalPhotoUpload(msg);
+          }
+        }
+        // Regular user photo upload handling (legacy)
         else if (state?.step === "get_photos") {
           if (msg.media_group_id) {
             return postController.handleMediaGroupPhoto(msg);
@@ -441,6 +494,10 @@ function setupRoutes() {
       await handleCallbackQuery(bot, query, async () => {
         await userController.handleMyAdsPagination(query);
       });
+    } else if (data === "ask_rent_post_id") {
+      await handleCallbackQuery(bot, query, async () => {
+        await userController.askForRentPostId(query.message.chat.id);
+      });
     } else if (data.startsWith("admin_pending_page_")) {
       await handleCallbackQuery(bot, query, async () => {
         await adminController.handlePendingPageNav(query);
@@ -517,7 +574,7 @@ function setupRoutes() {
     // Photo submission options
     else if (data === "add_photos") {
       await handleCallbackQuery(bot, query, async () => {
-        await postController.askForPhotos(msg.chat.id);
+        await postController.askForCoverPhoto(msg.chat.id);
       });
     } else if (data === "skip_photos") {
       await handleCallbackQuery(bot, query, async () => {
@@ -526,6 +583,18 @@ function setupRoutes() {
     } else if (data === "finish_photos") {
       await handleCallbackQuery(bot, query, async () => {
         await postController.finishPhotos(msg.chat.id);
+      });
+    } else if (data === "cover_photo_done") {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.askForAdditionalPhotos(msg.chat.id);
+      });
+    } else if (data === "finish_additional_photos") {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.finishAdditionalPhotos(msg.chat.id);
+      });
+    } else if (data === "skip_additional_photos") {
+      await handleCallbackQuery(bot, query, async () => {
+        await postController.finishAdditionalPhotos(msg.chat.id);
       });
     }
 
@@ -674,6 +743,17 @@ function setupRoutes() {
     else if (data.startsWith("user_bathroom_edit_")) {
       await handleCallbackQuery(bot, query, async () => {
         await postController.handleUserBathroomTypeEdit(query);
+      });
+    }
+
+    // Additional media viewing callbacks
+    else if (data.startsWith("view_additional_media_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        const postId = data.split("_")[3]; // view_additional_media_123 -> 123
+        await require("../services/channelService").handleViewAdditionalMedia(
+          query,
+          postId
+        );
       });
     }
 

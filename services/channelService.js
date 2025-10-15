@@ -366,15 +366,29 @@ module.exports = {
       const botUsername = process.env.BOT_USERNAME || "YourBotUsername"; // Make sure to set this in .env
       const deepLink = `https://t.me/${botUsername}?start=contact_${postId}`;
 
+      // Create keyboard with additional media button first, then contact button
+      const keyboardButtons = [];
+
+      // Add additional media button if there are multiple photos (above contact button)
+      if (photos && photos.length > 1) {
+        keyboardButtons.push([
+          {
+            text: "ተጨማሪ ምስሎች",
+            callback_data: `view_additional_media_${postId}`,
+          },
+        ]);
+      }
+
+      // Always add contact button
+      keyboardButtons.push([
+        {
+          text: contactButtonText,
+          url: deepLink,
+        },
+      ]);
+
       const inlineKeyboard = {
-        inline_keyboard: [
-          [
-            {
-              text: contactButtonText,
-              url: deepLink,
-            },
-          ],
-        ],
+        inline_keyboard: keyboardButtons,
       };
 
       let channelMessage = null;
@@ -417,29 +431,8 @@ module.exports = {
 
           console.log(`✅ Post #${postId} published to channel with 1 media`);
         } else {
-          // Multiple photos: Media group first, then first photo with full post + button
-
-          // If there are additional photos, send them as media group first
-          if (photos.length > 1) {
-            const idCaption = generatePhotoCaption(post); // Returns "ID 00034" format
-            const remainingPhotos = photos.slice(1); // Get photos from index 1 onwards
-
-            const mediaGroup = remainingPhotos.map((photo, index) => ({
-              type:
-                photo.file_type === "video"
-                  ? "video"
-                  : photo.file_type === "document"
-                  ? "document"
-                  : "photo",
-              media: photo.telegram_file_id,
-              caption: index === 0 ? idCaption : undefined,
-              parse_mode: index === 0 ? "HTML" : undefined,
-            }));
-
-            await bot().sendMediaGroup(process.env.CHANNEL_ID, mediaGroup);
-          }
-
-          // Then send first media with full post text and button
+          // Multiple photos: Send only first photo with full post + button
+          // Additional photos will be shown via button click
           const firstMedia = photos[0];
           if (firstMedia.file_type === "video") {
             channelMessage = await bot().sendVideo(
@@ -474,7 +467,11 @@ module.exports = {
           }
 
           console.log(
-            `✅ Post #${postId} published to channel with ${photos.length} media`
+            `✅ Post #${postId} published to channel with ${
+              photos.length
+            } media (first media shown, ${
+              photos.length - 1
+            } additional via button)`
           );
         }
       } else {
@@ -501,6 +498,127 @@ module.exports = {
     } catch (error) {
       console.error(`❌ Error publishing post ${postId}:`, error);
       throw error;
+    }
+  },
+
+  async handleViewAdditionalMedia(callback, postId) {
+    try {
+      const userId = callback.from.id;
+
+      // Answer the callback query with redirect to bot
+      const botUsername = process.env.BOT_USERNAME || "YourBotUsername";
+      const redirectLink = `https://t.me/${botUsername}?start=media_${postId}`;
+
+      await bot().answerCallbackQuery(callback.id, {
+        text: "ወደ ቦት ተሸጋግረው ተጨማሪ ምስሎች ይመልከቱ!",
+        url: redirectLink,
+      });
+    } catch (error) {
+      console.error("Error handling view additional media:", error);
+      try {
+        await bot().answerCallbackQuery(callback.id, {
+          text: "ስህተት ተከስቷል!",
+        });
+      } catch (answerError) {
+        console.error("Error answering callback query:", answerError);
+      }
+    }
+  },
+
+  async handleMediaViewingRequest(userId, postId) {
+    try {
+      // Get the post and its photos
+      const post = await db.getPost(postId);
+      if (!post) {
+        return bot().sendMessage(userId, "❌ ማስታወቂያ አልተገኘም!");
+      }
+
+      const photos = await db.getPostPhotos(postId);
+      if (photos.length <= 1) {
+        return bot().sendMessage(userId, "❌ ተጨማሪ ምስሎች የሉም!");
+      }
+
+      // Get additional photos (excluding the first one)
+      const additionalPhotos = photos.slice(1);
+
+      // Send additional photos as media group privately to the user
+      if (additionalPhotos.length > 0) {
+        // Generate house ID for the message (same format as channel display)
+        const preposts = parseInt(process.env.PREPOSTS) || 0;
+        const displayId = post.id + preposts;
+        const houseId = String(displayId).padStart(5, "0");
+
+        // Prepare return button with direct channel link
+        const channelLink = `https://t.me/${
+          process.env.CHANNEL_USERNAME || "your_channel"
+        }`;
+        const returnKeyboard = {
+          inline_keyboard: [
+            [
+              {
+                text: "↩️ ወደ ቻናል ተመለስ",
+                url: channelLink,
+              },
+            ],
+          ],
+        };
+
+        // Send additional photos as media group (without caption/button)
+        // But exclude the first additional photo as we'll send it separately with caption
+        const remainingPhotos = additionalPhotos.slice(1);
+        if (remainingPhotos.length > 0) {
+          const mediaGroup = remainingPhotos.map((photo) => ({
+            type:
+              photo.file_type === "video"
+                ? "video"
+                : photo.file_type === "document"
+                ? "document"
+                : "photo",
+            media: photo.telegram_file_id,
+          }));
+
+          await bot().sendMediaGroup(userId, mediaGroup);
+        }
+
+        // Send first additional photo separately with caption and back button
+        const firstAdditionalPhoto = additionalPhotos[0];
+        if (firstAdditionalPhoto) {
+          if (firstAdditionalPhoto.file_type === "video") {
+            await bot().sendVideo(
+              userId,
+              firstAdditionalPhoto.telegram_file_id,
+              {
+                caption: `📸 ተጨማሪ ምስሎች ለ ቤት ${houseId}`,
+                parse_mode: "HTML",
+                reply_markup: returnKeyboard,
+              }
+            );
+          } else if (firstAdditionalPhoto.file_type === "document") {
+            await bot().sendDocument(
+              userId,
+              firstAdditionalPhoto.telegram_file_id,
+              {
+                caption: `📸 ተጨማሪ ምስሎች ለ ቤት ${houseId}`,
+                parse_mode: "HTML",
+                reply_markup: returnKeyboard,
+              }
+            );
+          } else {
+            await bot().sendPhoto(
+              userId,
+              firstAdditionalPhoto.telegram_file_id,
+              {
+                caption: `📸 ተጨማሪ ምስሎች ለ ቤት ${houseId}`,
+                parse_mode: "HTML",
+                reply_markup: returnKeyboard,
+              }
+            );
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error handling media viewing request:", error);
+      await bot().sendMessage(userId, "❌ ስህተት ተከስቷል! እባክዎ እንደገና ይሞክሩ።");
     }
   },
 

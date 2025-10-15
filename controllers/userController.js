@@ -31,6 +31,17 @@ module.exports = {
     }
   },
 
+  async askForRentPostId(chatId) {
+    try {
+      await bot().sendMessage(chatId, "የተከራየውን ቤት Post ID ያስገቡ", {
+        parse_mode: "HTML",
+      });
+      setState(chatId, { step: "waiting_rent_post_id" });
+    } catch (error) {
+      console.error("Error in askForRentPostId:", error);
+    }
+  },
+
   async startHandler(msg) {
     try {
       const chatId = msg.chat.id;
@@ -266,7 +277,7 @@ module.exports = {
     const slice = posts.slice(start, end);
 
     let message = `📋 <b>የእርስዎ ማስታወቂያዎች (${total})</b>\n`;
-    message += `📄 Page ${currentPage}/${totalPages}\n\n`;
+    message += `Page ${currentPage}/${totalPages}\n\n`;
 
     const preposts = parseInt(process.env.PREPOSTS) || 0;
 
@@ -276,17 +287,14 @@ module.exports = {
       const displayId = post.id + preposts;
       const num = start + idx + 1;
 
-      message += `${num}. ${statusEmoji} <b>ፓስት ID ${displayId}</b> - ${
+      message += `${num}. ${statusEmoji} <b>ID ${displayId}</b> - ${
         post.title || "አልታወቀም"
       }\n`;
-      message += `   📍 ${post.location || "አልታወቀም"}\n`;
-      message += `   💰 ${post.price || "አልታወቀም"}\n`;
-      message += `   👆 ${post.total_clicks} ሰው ስልኮን አይቶታል\n`;
-      message += `   📅 ${createdDate}\n\n`;
+      message += `   <b>አድራሻ - </b> ${post.location || "አልታወቀም"}\n`;
+      message += `   <b>ዋጋ - </b> ${post.price || "አልታወቀም"}\n`;
+      message += `   <b>እይታ - </b> ${post.total_clicks} ሰው ስልኮን አይቶታል\n`;
+      message += `   ${createdDate}\n\n`;
     });
-
-    message += `💡 <b>ከነዚህ መሃል የተከራየ ቤት ካሎት ለኛ ላማሳወቅ:</b>\n`;
-    message += `Post ID ውን ያስገቡ...\n\n`;
 
     const keyboard = [];
     const navRow = [];
@@ -305,18 +313,17 @@ module.exports = {
     if (navRow.length) keyboard.push(navRow);
 
     keyboard.push([
-      { text: "🔄 Refresh List", callback_data: "refresh_my_ads" },
+      { text: "🛖 ቤቶ መከራየቱን ለማሳወቅ", callback_data: "ask_rent_post_id" },
     ]);
+
     keyboard.push([
-      { text: "🛖 ወደ ዋና ማውጫ ይመለሱ", callback_data: "back_to_main_menu" },
+      { text: "⤴️ ወደ ዋና ማውጫ ይመለሱ", callback_data: "back_to_main_menu" },
     ]);
 
     await bot().sendMessage(chatId, message, {
       parse_mode: "HTML",
       reply_markup: { inline_keyboard: keyboard },
     });
-
-    setState(chatId, { step: "waiting_rent_post_id" });
   },
 
   async handleMyAdsPagination(callback) {
@@ -355,13 +362,13 @@ module.exports = {
         const displayId = post.id + preposts;
         const num = start + idx + 1;
 
-        message += `${num}. ${statusEmoji} <b>ፓስት ID ${displayId}</b> - ${
+        message += `${num}. ${statusEmoji} <b>ID ${displayId}</b> - ${
           post.title || "አልታወቀም"
         }\n`;
-        message += `   📍 ${post.location || "አልታወቀም"}\n`;
-        message += `   💰 ${post.price || "አልታወቀም"}\n`;
-        message += `   👆 ${post.total_clicks} ሰው ስልኮን አይቶታል\n`;
-        message += `   📅 ${createdDate}\n\n`;
+        message += `   <b>አድራሻ -</b> ${post.location || "አልታወቀም"}\n`;
+        message += `   <b>ዋጋ - </b> ${post.price || "አልታወቀም"}\n`;
+        message += `   <b>እይታ - </b> ${post.total_clicks} ሰው ስልኮን አይቶታል\n`;
+        message += `   ${createdDate}\n\n`;
       });
 
       const keyboard = [];
@@ -380,10 +387,11 @@ module.exports = {
       }
       if (navRow.length) keyboard.push(navRow);
       keyboard.push([
-        { text: "🔄 Refresh List", callback_data: "refresh_my_ads" },
+        { text: "🛖 ቤቶ መከራየቱን ለማሳወቅ", callback_data: "ask_rent_post_id" },
       ]);
+
       keyboard.push([
-        { text: "🛖 ወደ ዋና ማውጫ ይመለሱ", callback_data: "back_to_main_menu" },
+        { text: "⤴️ ወደ ዋና ማውጫ ይመለሱ", callback_data: "back_to_main_menu" },
       ]);
 
       await bot().editMessageText(message, {
@@ -392,8 +400,6 @@ module.exports = {
         parse_mode: "HTML",
         reply_markup: { inline_keyboard: keyboard },
       });
-
-      setState(chatId, { step: "waiting_rent_post_id" });
     } catch (error) {
       console.error("Error in handleMyAdsPagination:", error);
       try {
@@ -407,9 +413,9 @@ module.exports = {
       case "pending":
         return "⏳";
       case "approved":
-        return "✅";
-      case "published":
         return "🟢";
+      case "published":
+        return "✅";
       case "rejected":
         return "❌";
       case "rented":
@@ -427,10 +433,10 @@ module.exports = {
       }
 
       const accountMessage =
-        `👤 <b>የእርስዎ አካውንት</b>\n\n` +
-        `📝 <b>ስም:</b> ${user.name || "Not set"}\n` +
-        `📱 <b>ስልክ ቁጥር:</b> ${user.phone || "Not set"}\n` +
-        `👤 <b>አይነት:</b> ${user.user_type || "Not set"}\n` +
+        ` <b>የእርስዎ አካውንት</b>\n\n` +
+        ` <b>ስም:</b> ${user.name || "Not set"}\n` +
+        ` <b>ስልክ ቁጥር:</b> ${user.phone || "Not set"}\n` +
+        ` <b>አይነት:</b> ${user.user_type || "Not set"}\n` +
         `📅 <b>የተመዘገበበት ቀን:</b> ${new Date(user.created_at).toLocaleDateString(
           "am-ET"
         )}`;
@@ -451,7 +457,7 @@ module.exports = {
             ],
             [
               {
-                text: "🛖 ወደ ዋና ማውጫይመለሱ",
+                text: "⤴️ ወደ ዋና ማውጫይመለሱ",
                 callback_data: "back_to_main_menu",
               },
             ],

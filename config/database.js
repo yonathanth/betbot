@@ -289,7 +289,7 @@ async function initializeDatabase() {
         id INT PRIMARY KEY AUTO_INCREMENT,
         post_id INT NOT NULL,
         user_telegram_id BIGINT NOT NULL,
-        click_type ENUM('contact', 'view') DEFAULT 'contact',
+        click_type ENUM('contact', 'view', 'media') DEFAULT 'contact',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
         INDEX idx_post_id (post_id),
@@ -297,6 +297,23 @@ async function initializeDatabase() {
         INDEX idx_created_at (created_at)
       )
     `);
+
+    // Update existing post_clicks table to include 'media' in ENUM if needed
+    try {
+      await pool.execute(
+        `ALTER TABLE post_clicks MODIFY COLUMN click_type ENUM('contact', 'view', 'media') DEFAULT 'contact'`
+      );
+      console.log(`✅ Updated post_clicks.click_type ENUM to include 'media'`);
+    } catch (error) {
+      if (
+        error.message.includes("Duplicate entry") ||
+        error.message.includes("already exists")
+      ) {
+        console.log(`↳ Column click_type already includes 'media'`);
+      } else {
+        console.error(`Error updating click_type ENUM:`, error.message);
+      }
+    }
 
     console.log("Database schema initialized successfully");
   } catch (error) {

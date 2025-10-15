@@ -922,29 +922,65 @@ module.exports = {
     }
   },
 
-  async askForPhotos(chatId) {
+  async askForCoverPhoto(chatId) {
     try {
-      setState(chatId, { step: "get_photos" });
+      setState(chatId, { step: "get_cover_photo", photos: [] });
 
       await bot().sendMessage(
         chatId,
-        "📷 እባክዎ የቤቱን ሚድያ (ፎቶዎች/ቪዲዮዎች) ይላኩ\n\n" +
+        "📷 እባክዎ የቤቱን ዋና ፎቶ / ቪድዮ ይላኩ (አንድ ብቻ)\n\n" +
           "📝 መመሪያዎች:\n" +
-          "• እስከ 8 ሚድያ ድረስ መላክ ይችላሉ\n" +
-          "• ሚድያዎች ጥራታቸው ጥሩ እንዲሆን ያድርጉ\n" +
-          "• ቪዲዮዎች እስከ 50MB ድረስ ሊሆኑ ይችላሉ\n" +
-          "• ሚድያዎችን አንድ በአንድ ወይም በአንድ ጊዜ መላክ ይችላሉ\n" +
-          "• ጨርሰው ሲጨርሱ 'ጨርሻለሁ' የሚለውን ቁልፍ ይጫኑ",
+          "• ይህ ሚድያ በቻናላችን ውስጥ ዋና ሆኖ ይታያል \n" +
+          "• ጥሩ ጥራት ያለው ሚድያ ይምረጡ\n" +
+          "• አንድ ብቻ ይላኩ\n" +
+          "• ቀጣይ ተጨማሪ ምስሎች መላክ ይችላሉ",
         {
           reply_markup: {
             inline_keyboard: [
-              [{ text: "✅ጨርሻለሁ", callback_data: "finish_photos" }],
+              [
+                {
+                  text: "⏭️ ወደ ተጨማሪ ምስሎች",
+                  callback_data: "cover_photo_done",
+                },
+              ],
             ],
           },
         }
       );
     } catch (error) {
-      console.error("Error in askForPhotos:", error);
+      console.error("Error in askForCoverPhoto:", error);
+      bot().sendMessage(chatId, "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ።");
+    }
+  },
+
+  async askForAdditionalPhotos(chatId) {
+    try {
+      const state = getState(chatId);
+      setState(chatId, {
+        ...state,
+        step: "get_additional_photos",
+        additionalPhotos: [],
+      });
+
+      await bot().sendMessage(
+        chatId,
+        "📷 አሁን ተጨማሪ ምስሎች መላክ ይችላሉ (አማራጭ)\n\n" +
+          "📝 መመሪያዎች:\n" +
+          "• እስከ 7 ተጨማሪ ምስሎች ድረስ መላክ ይችላሉ\n" +
+          "• ሚድያዎች ጥራታቸው ጥሩ እንዲሆን ያድርጉ\n" +
+          "• ቪዲዮዎች እስከ 50MB ድረስ ሊሆኑ ይችላሉ\n" +
+          "• ሚድያዎችን አንድ በአንድ ወይም በአንድ ጊዜ መላክ ይችላሉ\n" +
+          "• ሲጨርሱ 'ጨርሻለሁ' የሚለውን ቁልፍ ይጫኑ",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "✅ጨርሻለሁ", callback_data: "finish_additional_photos" }],
+            ],
+          },
+        }
+      );
+    } catch (error) {
+      console.error("Error in askForAdditionalPhotos:", error);
       bot().sendMessage(chatId, "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ።");
     }
   },
@@ -1051,11 +1087,362 @@ module.exports = {
     }
   },
 
+  async handleCoverPhotoUpload(msg) {
+    const chatId = msg.chat.id;
+    try {
+      const state = getState(chatId);
+
+      if (!state || state.step !== "get_cover_photo") {
+        return;
+      }
+
+      // Check if user already has a cover photo
+      if (state.photos && state.photos.length > 0) {
+        return bot().sendMessage(
+          chatId,
+          "❌ ዋና ሚድያ ተቀምጧል! እባክዎ ተጨማሪ ምስሎች ወደ ማስገባት ይሂዱ።"
+        );
+      }
+
+      // Handle media group (multiple photos sent at once) with timeout to prevent multiple messages
+      if (msg.media_group_id) {
+        const {
+          addToMediaGroup,
+          getMediaGroup,
+          clearMediaGroup,
+        } = require("../services/botService");
+
+        const mediaGroupId = msg.media_group_id;
+
+        // Add photo/video to media group collection
+        let newPhoto = null;
+        if (msg.photo) {
+          newPhoto = {
+            file_id: msg.photo[msg.photo.length - 1].file_id,
+            file_size: msg.photo[msg.photo.length - 1].file_size,
+            type: "photo",
+          };
+          addToMediaGroup(mediaGroupId, newPhoto);
+        } else if (msg.video && msg.video.file_size <= 50 * 1024 * 1024) {
+          newPhoto = {
+            file_id: msg.video.file_id,
+            file_size: msg.video.file_size,
+            type: "video",
+          };
+          addToMediaGroup(mediaGroupId, newPhoto);
+        }
+
+        // Set a timeout to process the media group and send error only once
+        setTimeout(async () => {
+          try {
+            const currentState = getState(chatId);
+
+            // Check if this media group has already been processed
+            const mediaGroupData =
+              require("../services/botService").mediaGroups?.get(mediaGroupId);
+            if (!mediaGroupData || mediaGroupData.processed) return;
+
+            // Mark as processed to prevent duplicate error messages
+            mediaGroupData.processed = true;
+
+            // Send single error message
+            await bot().sendMessage(
+              chatId,
+              "❌ እባክዎ አንድ ዋና የሚሉትን ሚድያ ብቻ ይላኩ! ተጨማሪ ሚዲያ ካሎት ቀጣይ ሲጠየቁ ያሰገባሉ።"
+            );
+
+            // Clear the media group from memory
+            clearMediaGroup(mediaGroupId);
+          } catch (error) {
+            console.error("Error processing cover photo media group:", error);
+          }
+        }, 1000); // Wait 1 second for all photos in group to arrive
+        return;
+      }
+
+      let newPhoto = null;
+
+      // Handle regular photo
+      if (msg.photo) {
+        newPhoto = {
+          file_id: msg.photo[msg.photo.length - 1].file_id,
+          file_size: msg.photo[msg.photo.length - 1].file_size,
+          type: "photo",
+        };
+      }
+      // Handle document/image
+      else if (
+        msg.document &&
+        msg.document.mime_type &&
+        msg.document.mime_type.startsWith("image/")
+      ) {
+        newPhoto = {
+          file_id: msg.document.file_id,
+          file_size: msg.document.file_size,
+          type: "document",
+        };
+      }
+      // Handle video
+      else if (msg.video) {
+        // Check file size limit (50MB)
+        if (msg.video.file_size > 50 * 1024 * 1024) {
+          return bot().sendMessage(
+            chatId,
+            "❌ ቪዲዮው ከ50MB በላይ ነው። እባክዎ ትንሽ ቪዲዮ ይላኩ።"
+          );
+        }
+        newPhoto = {
+          file_id: msg.video.file_id,
+          file_size: msg.video.file_size,
+          type: "video",
+        };
+      }
+
+      if (!newPhoto) {
+        return bot().sendMessage(chatId, "❌ እባክዎ ትክክለኛ ፎቶ ወይም ቪዲዮ ይላኩ።");
+      }
+
+      // Store the cover photo
+      setState(chatId, { ...state, photos: [newPhoto] });
+
+      await bot().sendMessage(
+        chatId,
+        "✅ ዋና ፎቶ ተቀምጧል!\n\n" + "📷 አሁን ተጨማሪ ምስሎች መላክ ይችላሉ (አማራጭ)",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "⏭️ ወደ ተጨማሪ ምስሎች",
+                  callback_data: "cover_photo_done",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    } catch (error) {
+      console.error("Error in handleCoverPhotoUpload:", error);
+      bot().sendMessage(chatId, "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ።");
+    }
+  },
+
+  async handleAdditionalPhotoUpload(msg) {
+    const chatId = msg.chat.id;
+    try {
+      const {
+        addToMediaGroup,
+        getMediaGroup,
+        clearMediaGroup,
+      } = require("../services/botService");
+
+      const state = getState(chatId);
+
+      if (!state || state.step !== "get_additional_photos") {
+        return;
+      }
+
+      // Handle media group (multiple photos sent at once)
+      if (msg.media_group_id) {
+        const mediaGroupId = msg.media_group_id;
+
+        // Add photo/video to media group collection
+        let newPhoto = null;
+        if (msg.photo) {
+          newPhoto = {
+            file_id: msg.photo[msg.photo.length - 1].file_id,
+            file_size: msg.photo[msg.photo.length - 1].file_size,
+            type: "photo",
+          };
+          addToMediaGroup(mediaGroupId, newPhoto);
+        } else if (msg.video && msg.video.file_size <= 50 * 1024 * 1024) {
+          newPhoto = {
+            file_id: msg.video.file_id,
+            file_size: msg.video.file_size,
+            type: "video",
+          };
+          addToMediaGroup(mediaGroupId, newPhoto);
+        }
+
+        // Set a timeout to process the complete media group
+        setTimeout(async () => {
+          try {
+            const currentState = getState(chatId);
+            let additionalPhotos = currentState.additionalPhotos || [];
+
+            // Check if this media group has already been processed
+            const mediaGroupData =
+              require("../services/botService").mediaGroups?.get(mediaGroupId);
+            if (!mediaGroupData || mediaGroupData.processed) return;
+
+            // Mark as processed to prevent duplicate confirmations
+            mediaGroupData.processed = true;
+
+            const mediaGroupPhotos = getMediaGroup(mediaGroupId);
+            if (mediaGroupPhotos.length === 0) return;
+
+            // Calculate how many photos we can add (max 7 additional)
+            const maxCanAdd = 7 - additionalPhotos.length;
+            const totalPhotosToAdd = Math.min(
+              mediaGroupPhotos.length,
+              maxCanAdd
+            );
+
+            if (totalPhotosToAdd <= 0) {
+              await bot().sendMessage(
+                chatId,
+                `❌ ተጨማሪ ሚድያ መጨመር አይችሉም። ከፍተኛው 7 ተጨማሪ ምስሎች ነው።\n\n` +
+                  `አሁን የተቀመጡ: ${additionalPhotos.length}/7\n` +
+                  `እባክዎ 'ጨርሻለሁ' ይጫኑ።`
+              );
+              clearMediaGroup(mediaGroupId);
+              return;
+            }
+
+            const newPhotos = mediaGroupPhotos.slice(0, totalPhotosToAdd);
+            additionalPhotos = [...additionalPhotos, ...newPhotos];
+
+            // Clear the media group from memory
+            clearMediaGroup(mediaGroupId);
+
+            // Update state
+            setState(chatId, { ...currentState, additionalPhotos });
+
+            // Send single confirmation message
+            await bot().sendMessage(
+              chatId,
+              `✅ ተጨማሪ ምስሎች ${additionalPhotos.length}/7 ተቀምጧል\n\n` +
+                `${
+                  additionalPhotos.length < 7
+                    ? "📷 ተጨማሪ ሚድያ መላክ ይችላሉ ወይም ቁልፉን ይጫኑ።"
+                    : "✅ 7 ተጨማሪ ምስሎች አስገብተዋል፣ እባክዎ ጨርሻለሁ ይጫኑ።"
+                }`,
+              {
+                reply_markup: {
+                  inline_keyboard: [
+                    [
+                      {
+                        text: "✅ ጨርሻለሁ",
+                        callback_data: "finish_additional_photos",
+                      },
+                    ],
+                  ],
+                },
+              }
+            );
+          } catch (error) {
+            console.error("Error processing media group:", error);
+          }
+        }, 2000); // Wait 2 seconds for all photos in group to arrive
+        return;
+      }
+
+      // Handle single photo/video
+      let additionalPhotos = state.additionalPhotos || [];
+      let newPhoto = null;
+
+      // Handle regular photo
+      if (msg.photo) {
+        newPhoto = {
+          file_id: msg.photo[msg.photo.length - 1].file_id,
+          file_size: msg.photo[msg.photo.length - 1].file_size,
+          type: "photo",
+        };
+      }
+      // Handle document/image
+      else if (
+        msg.document &&
+        msg.document.mime_type &&
+        msg.document.mime_type.startsWith("image/")
+      ) {
+        newPhoto = {
+          file_id: msg.document.file_id,
+          file_size: msg.document.file_size,
+          type: "document",
+        };
+      }
+      // Handle video
+      else if (msg.video) {
+        // Check file size limit (50MB)
+        if (msg.video.file_size > 50 * 1024 * 1024) {
+          return bot().sendMessage(
+            chatId,
+            "❌ ቪዲዮው ከ50MB በላይ ነው። እባክዎ ትንሽ ቪዲዮ ይላኩ።"
+          );
+        }
+        newPhoto = {
+          file_id: msg.video.file_id,
+          file_size: msg.video.file_size,
+          type: "video",
+        };
+      }
+
+      if (!newPhoto) {
+        return bot().sendMessage(chatId, "❌ እባክዎ ትክክለኛ ፎቶ ወይም ቪዲዮ ይላኩ።");
+      }
+
+      // Check if adding this photo would exceed the limit (7 additional)
+      if (additionalPhotos.length >= 7) {
+        return bot().sendMessage(
+          chatId,
+          "❌ አስቀድመው 7 ተጨማሪ ምስሎች አሉ። ተጨማሪ ሚድያ መጨመር አይችሉም። እባክዎ 'ጨርሻለሁ' ይጫኑ።"
+        );
+      }
+
+      // Add the photo
+      additionalPhotos.push(newPhoto);
+
+      setState(chatId, { ...state, additionalPhotos });
+
+      await bot().sendMessage(
+        chatId,
+        `✅ ተጨማሪ ምስሎች ${additionalPhotos.length}/7 ተቀምጧል\n\n` +
+          `${
+            additionalPhotos.length < 7
+              ? "📷 ተጨማሪ ሚድያ መላክ ይችላሉ ወይም ቁልፉን ይጫኑ።"
+              : "✅ 7 ተጨማሪ ምስሎች አስገብተዋል፣ እባክዎ ጨርሻለሁ ይጫኑ።"
+          }`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "✅ ጨርሻለሁ", callback_data: "finish_additional_photos" }],
+            ],
+          },
+        }
+      );
+    } catch (error) {
+      console.error("Error in handleAdditionalPhotoUpload:", error);
+      bot().sendMessage(chatId, "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ።");
+    }
+  },
+
   async skipPhotos(chatId) {
     try {
       await this.completeListing(chatId);
     } catch (error) {
       console.error("Error in skipPhotos:", error);
+      bot().sendMessage(chatId, "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ።");
+    }
+  },
+
+  async finishAdditionalPhotos(chatId) {
+    try {
+      const state = getState(chatId);
+      const coverPhotos = state.photos || [];
+      const additionalPhotos = state.additionalPhotos || [];
+
+      // Combine cover photo and additional photos
+      const allPhotos = [...coverPhotos, ...additionalPhotos];
+
+      if (allPhotos.length > 0) {
+        // Save photos to database
+        const postId = await db.savePostPhotos(chatId, allPhotos);
+        console.log(`✅ Saved ${allPhotos.length} photos for post #${postId}`);
+      }
+
+      await this.completeListing(chatId);
+    } catch (error) {
+      console.error("Error in finishAdditionalPhotos:", error);
       bot().sendMessage(chatId, "❌ይቅርታ! እባክዎ እንደገና ይሞክሩ።");
     }
   },
