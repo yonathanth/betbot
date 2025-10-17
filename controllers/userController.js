@@ -437,7 +437,7 @@ module.exports = {
         ` <b>ስም:</b> ${user.name || "Not set"}\n` +
         ` <b>ስልክ ቁጥር:</b> ${user.phone || "Not set"}\n` +
         ` <b>አይነት:</b> ${user.user_type || "Not set"}\n` +
-        `📅 <b>የተመዘገበበት ቀን:</b> ${new Date(user.created_at).toLocaleDateString(
+        ` <b>የተመዘገቡበት ቀን:</b> ${new Date(user.created_at).toLocaleDateString(
           "am-ET"
         )}`;
 

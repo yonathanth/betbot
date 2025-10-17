@@ -613,4 +613,126 @@ module.exports = {
       throw error;
     }
   },
+
+  // Broadcast methods
+  async getBroadcastStats() {
+    try {
+      const [allUsers] = await pool.query(
+        "SELECT COUNT(*) as count FROM users WHERE is_active = TRUE"
+      );
+      const [admins] = await pool.query(
+        "SELECT COUNT(*) as count FROM users WHERE is_admin = TRUE AND is_active = TRUE"
+      );
+      const [brokers] = await pool.query(
+        "SELECT COUNT(*) as count FROM users WHERE user_type = 'broker' AND is_active = TRUE"
+      );
+      const [owners] = await pool.query(
+        "SELECT COUNT(*) as count FROM users WHERE user_type = 'owner' AND is_active = TRUE"
+      );
+      const [tenants] = await pool.query(
+        "SELECT COUNT(*) as count FROM users WHERE user_type = 'tenant' AND is_active = TRUE"
+      );
+
+      return {
+        all: allUsers[0].count,
+        admin: admins[0].count,
+        brokers: brokers[0].count,
+        owners: owners[0].count,
+        tenants: tenants[0].count,
+      };
+    } catch (error) {
+      console.error("Error getting broadcast stats:", error);
+      throw error;
+    }
+  },
+
+  async getUserCountByType(userType) {
+    try {
+      let query, params;
+
+      if (userType === "all") {
+        query = "SELECT COUNT(*) as count FROM users WHERE is_active = TRUE";
+        params = [];
+      } else if (userType === "admin") {
+        query =
+          "SELECT COUNT(*) as count FROM users WHERE is_admin = TRUE AND is_active = TRUE";
+        params = [];
+      } else {
+        query =
+          "SELECT COUNT(*) as count FROM users WHERE user_type = ? AND is_active = TRUE";
+        params = [userType];
+      }
+
+      const [result] = await pool.query(query, params);
+      return result[0].count;
+    } catch (error) {
+      console.error("Error getting user count by type:", error);
+      throw error;
+    }
+  },
+
+  async getUsersByType(userType) {
+    try {
+      let query, params;
+
+      if (userType === "all") {
+        query =
+          "SELECT telegram_id, name, user_type FROM users WHERE is_active = TRUE ORDER BY created_at DESC";
+        params = [];
+      } else if (userType === "admin") {
+        query =
+          "SELECT telegram_id, name, user_type FROM users WHERE is_admin = TRUE AND is_active = TRUE ORDER BY created_at DESC";
+        params = [];
+      } else {
+        query =
+          "SELECT telegram_id, name, user_type FROM users WHERE user_type = ? AND is_active = TRUE ORDER BY created_at DESC";
+        params = [userType];
+      }
+
+      const [users] = await pool.query(query, params);
+      return users.map((user) => user.telegram_id);
+    } catch (error) {
+      console.error("Error getting users by type:", error);
+      throw error;
+    }
+  },
+
+  async getUsersForBroadcast(userType) {
+    try {
+      // Get active users with their basic info
+      let query, params;
+
+      if (userType === "all") {
+        query = `
+          SELECT telegram_id, name, user_type, created_at 
+          FROM users 
+          WHERE is_active = TRUE 
+          ORDER BY created_at DESC
+        `;
+        params = [];
+      } else if (userType === "admin") {
+        query = `
+          SELECT telegram_id, name, user_type, created_at 
+          FROM users 
+          WHERE is_admin = TRUE AND is_active = TRUE 
+          ORDER BY created_at DESC
+        `;
+        params = [];
+      } else {
+        query = `
+          SELECT telegram_id, name, user_type, created_at 
+          FROM users 
+          WHERE user_type = ? AND is_active = TRUE 
+          ORDER BY created_at DESC
+        `;
+        params = [userType];
+      }
+
+      const [users] = await pool.query(query, params);
+      return users;
+    } catch (error) {
+      console.error("Error getting users for broadcast:", error);
+      throw error;
+    }
+  },
 };

@@ -509,10 +509,17 @@ module.exports = {
       const botUsername = process.env.BOT_USERNAME || "YourBotUsername";
       const redirectLink = `https://t.me/${botUsername}?start=media_${postId}`;
 
-      await bot().answerCallbackQuery(callback.id, {
-        text: "ወደ ቦት ተሸጋግረው ተጨማሪ ምስሎች ይመልከቱ!",
-        url: redirectLink,
-      });
+      // Check if bot username is valid before using URL
+      if (botUsername === "YourBotUsername" || !botUsername) {
+        await bot().answerCallbackQuery(callback.id, {
+          text: "ተጨማሪ ምስሎች ይመልከቱ! እባክዎ ቦትን ይጀምሩ።",
+        });
+      } else {
+        await bot().answerCallbackQuery(callback.id, {
+          text: "ወደ ቦት ተሸጋግረው ተጨማሪ ምስሎች ይመልከቱ!",
+          url: redirectLink,
+        });
+      }
     } catch (error) {
       console.error("Error handling view additional media:", error);
       try {
@@ -563,58 +570,24 @@ module.exports = {
           ],
         };
 
-        // Send additional photos as media group (without caption/button)
-        // But exclude the first additional photo as we'll send it separately with caption
-        const remainingPhotos = additionalPhotos.slice(1);
-        if (remainingPhotos.length > 0) {
-          const mediaGroup = remainingPhotos.map((photo) => ({
-            type:
-              photo.file_type === "video"
-                ? "video"
-                : photo.file_type === "document"
-                ? "document"
-                : "photo",
-            media: photo.telegram_file_id,
-          }));
+        // Send all additional photos as media group (without caption/button)
+        const mediaGroup = additionalPhotos.map((photo) => ({
+          type:
+            photo.file_type === "video"
+              ? "video"
+              : photo.file_type === "document"
+              ? "document"
+              : "photo",
+          media: photo.telegram_file_id,
+        }));
 
-          await bot().sendMediaGroup(userId, mediaGroup);
-        }
+        await bot().sendMediaGroup(userId, mediaGroup);
 
-        // Send first additional photo separately with caption and back button
-        const firstAdditionalPhoto = additionalPhotos[0];
-        if (firstAdditionalPhoto) {
-          if (firstAdditionalPhoto.file_type === "video") {
-            await bot().sendVideo(
-              userId,
-              firstAdditionalPhoto.telegram_file_id,
-              {
-                caption: `📸 ተጨማሪ ምስሎች ለ ቤት ${houseId}`,
-                parse_mode: "HTML",
-                reply_markup: returnKeyboard,
-              }
-            );
-          } else if (firstAdditionalPhoto.file_type === "document") {
-            await bot().sendDocument(
-              userId,
-              firstAdditionalPhoto.telegram_file_id,
-              {
-                caption: `📸 ተጨማሪ ምስሎች ለ ቤት ${houseId}`,
-                parse_mode: "HTML",
-                reply_markup: returnKeyboard,
-              }
-            );
-          } else {
-            await bot().sendPhoto(
-              userId,
-              firstAdditionalPhoto.telegram_file_id,
-              {
-                caption: `📸 ተጨማሪ ምስሎች ለ ቤት ${houseId}`,
-                parse_mode: "HTML",
-                reply_markup: returnKeyboard,
-              }
-            );
-          }
-        }
+        // Send caption and back button as separate text message
+        await bot().sendMessage(userId, `📸 ተጨማሪ ምስሎች ለ ቤት ${houseId}`, {
+          parse_mode: "HTML",
+          reply_markup: returnKeyboard,
+        });
       }
     } catch (error) {
       console.error("Error handling media viewing request:", error);

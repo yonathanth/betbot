@@ -1,4 +1,9 @@
-const { getBot, setState, getState } = require("../services/botService");
+const {
+  getBot,
+  setState,
+  getState,
+  clearState,
+} = require("../services/botService");
 const db = require("../services/dbService");
 const channelService = require("../services/channelService");
 const tokenService = require("../services/tokenService");
@@ -600,6 +605,12 @@ async function handleAdminBackToDashboard(callback) {
                 callback_data: "admin_generate_token",
               },
             ],
+            [
+              {
+                text: "📢 Broadcast Message",
+                callback_data: "admin_broadcast",
+              },
+            ],
           ],
         },
       }
@@ -610,6 +621,1223 @@ async function handleAdminBackToDashboard(callback) {
       bot().answerCallbackQuery(callback.id, { text: "Error!" });
     } catch (answerError) {
       console.error("Error answering callback query:", answerError);
+    }
+  }
+}
+
+async function handleAdminBroadcast(callback) {
+  try {
+    const chatId = callback.message.chat.id;
+
+    if (!(await isAdmin(chatId))) {
+      return bot().answerCallbackQuery(callback.id, {
+        text: "Access denied!",
+      });
+    }
+
+    // Answer callback query first to prevent timeout
+    bot().answerCallbackQuery(callback.id);
+
+    // Clear any existing state
+    setState(chatId, { step: "broadcast_target" });
+
+    // Get user counts for display
+    const stats = await db.getBroadcastStats();
+
+    await bot().sendMessage(
+      chatId,
+      "📢 <b>Broadcast Message</b>\n\n" +
+        "Choose who you want to send the broadcast to:",
+      {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: `All Users (${stats.all})`,
+                callback_data: "broadcast_target_all",
+              },
+            ],
+            [
+              {
+                text: `👑 Admins (${stats.admin})`,
+                callback_data: "broadcast_target_admin",
+              },
+            ],
+            [
+              {
+                text: `Brokers (${stats.brokers})`,
+                callback_data: "broadcast_target_broker",
+              },
+            ],
+            [
+              {
+                text: `Owners (${stats.owners})`,
+                callback_data: "broadcast_target_owner",
+              },
+            ],
+            [
+              {
+                text: `Tenants (${stats.tenants})`,
+                callback_data: "broadcast_target_tenant",
+              },
+            ],
+            [
+              {
+                text: "⏪ Back to Dashboard",
+                callback_data: "admin_back_to_dashboard",
+              },
+            ],
+          ],
+        },
+      }
+    );
+  } catch (error) {
+    console.error("Error in handleAdminBroadcast:", error);
+    try {
+      bot().answerCallbackQuery(callback.id, { text: "Error!" });
+    } catch (answerError) {
+      console.error("Error answering callback query:", answerError);
+    }
+  }
+}
+
+async function handleBroadcastTargetSelection(callback) {
+  try {
+    const chatId = callback.message.chat.id;
+
+    if (!(await isAdmin(chatId))) {
+      return bot().answerCallbackQuery(callback.id, {
+        text: "Access denied!",
+      });
+    }
+
+    // Answer callback query first to prevent timeout
+    bot().answerCallbackQuery(callback.id);
+
+    // Extract target type from callback data (broadcast_target_all, broadcast_target_broker, etc.)
+    const targetType = callback.data.replace("broadcast_target_", "");
+
+    // Update state with selected target
+    setState(chatId, {
+      step: "broadcast_title",
+      target: targetType,
+    });
+
+    // Get user count for confirmation
+    const userCount = await db.getUserCountByType(targetType);
+    const targetDisplayName =
+      targetType === "all"
+        ? "All Users"
+        : targetType === "admin"
+        ? "Admins"
+        : targetType === "broker"
+        ? "Brokers"
+        : targetType === "owner"
+        ? "Owners"
+        : targetType === "tenant"
+        ? "Tenants"
+        : targetType;
+
+    await bot().sendMessage(
+      chatId,
+      `📢 <b>Broadcast Message</b>\n\n` +
+        `✅ Target: ${targetDisplayName} (${userCount} users)\n\n` +
+        `📝 Enter the title for your broadcast message:`,
+      {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "⏪ Back to Target Selection",
+                callback_data: "admin_broadcast",
+              },
+            ],
+          ],
+        },
+      }
+    );
+  } catch (error) {
+    console.error("Error in handleBroadcastTargetSelection:", error);
+    try {
+      bot().answerCallbackQuery(callback.id, { text: "Error!" });
+    } catch (answerError) {
+      console.error("Error answering callback query:", answerError);
+    }
+  }
+}
+
+async function handleBroadcastTitleInput(msg) {
+  try {
+    const chatId = msg.chat.id;
+
+    if (!(await isAdmin(chatId))) {
+      return bot().sendMessage(chatId, "❌ Access denied!");
+    }
+
+    const title = msg.text?.trim();
+
+    if (!title || title.length === 0) {
+      return bot().sendMessage(
+        chatId,
+        "❌ Title cannot be empty. Please enter a valid title:",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "⏪ Back to Target Selection",
+                  callback_data: "admin_broadcast",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    }
+
+    if (title.length > 100) {
+      return bot().sendMessage(
+        chatId,
+        "❌ Title is too long. Please keep it under 100 characters:",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "⏪ Back to Target Selection",
+                  callback_data: "admin_broadcast",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    }
+
+    // Get current state and update with title
+    const currentState = getState(chatId);
+    setState(chatId, {
+      ...currentState,
+      step: "broadcast_message",
+      title: title,
+    });
+
+    // Get user count for display
+    const userCount = await db.getUserCountByType(currentState.target);
+    const targetDisplayName =
+      currentState.target === "all"
+        ? "All Users"
+        : currentState.target === "admin"
+        ? "Admins"
+        : currentState.target === "broker"
+        ? "Brokers"
+        : currentState.target === "owner"
+        ? "Owners"
+        : currentState.target === "tenant"
+        ? "Tenants"
+        : currentState.target;
+
+    await bot().sendMessage(
+      chatId,
+      `📢 <b>Broadcast Message</b>\n\n` +
+        `✅ Target: ${targetDisplayName} (${userCount} users)\n` +
+        `📝 Title: ${title}\n\n` +
+        `💬 Enter the message content for your broadcast:`,
+      {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "⏪ Back to Title",
+                callback_data: `broadcast_target_${currentState.target}`,
+              },
+            ],
+          ],
+        },
+      }
+    );
+  } catch (error) {
+    console.error("Error in handleBroadcastTitleInput:", error);
+    bot().sendMessage(
+      msg.chat.id,
+      "❌ Error processing title. Please try again."
+    );
+  }
+}
+
+async function handleBroadcastMessageInput(msg) {
+  try {
+    const chatId = msg.chat.id;
+
+    if (!(await isAdmin(chatId))) {
+      return bot().sendMessage(chatId, "❌ Access denied!");
+    }
+
+    const messageContent = msg.text?.trim();
+
+    if (!messageContent || messageContent.length === 0) {
+      return bot().sendMessage(
+        chatId,
+        "❌ Message content cannot be empty. Please enter your message:",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "⏪ Back to Title",
+                  callback_data: "admin_broadcast",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    }
+
+    if (messageContent.length > 4096) {
+      return bot().sendMessage(
+        chatId,
+        "❌ Message is too long. Please keep it under 4096 characters:",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "⏪ Back to Title",
+                  callback_data: "admin_broadcast",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    }
+
+    // Get current state and update with message content
+    const currentState = getState(chatId);
+    setState(chatId, {
+      ...currentState,
+      step: "broadcast_media",
+      message: messageContent,
+    });
+
+    // Get user count for display
+    const userCount = await db.getUserCountByType(currentState.target);
+    const targetDisplayName =
+      currentState.target === "all"
+        ? "All Users"
+        : currentState.target === "admin"
+        ? "Admins"
+        : currentState.target === "broker"
+        ? "Brokers"
+        : currentState.target === "owner"
+        ? "Owners"
+        : currentState.target === "tenant"
+        ? "Tenants"
+        : currentState.target;
+
+    await bot().sendMessage(
+      chatId,
+      `📢 <b>Broadcast Message</b>\n\n` +
+        `✅ Target: ${targetDisplayName} (${userCount} users)\n` +
+        `📝 Title: ${currentState.title}\n` +
+        `💬 Message: ${messageContent.substring(0, 100)}${
+          messageContent.length > 100 ? "..." : ""
+        }\n\n` +
+        `📎 <b>Optional:</b> Attach media (photo, video, or document) or click "Continue" to proceed without media:`,
+      {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "📎 Attach Media",
+                callback_data: "broadcast_attach_media",
+              },
+            ],
+            [
+              {
+                text: "➡️ Continue",
+                callback_data: "broadcast_continue",
+              },
+            ],
+            [
+              {
+                text: "⏪ Back to Message",
+                callback_data: `broadcast_target_${currentState.target}`,
+              },
+            ],
+          ],
+        },
+      }
+    );
+  } catch (error) {
+    console.error("Error in handleBroadcastMessageInput:", error);
+    bot().sendMessage(
+      msg.chat.id,
+      "❌ Error processing message. Please try again."
+    );
+  }
+}
+
+async function handleBroadcastAttachMedia(callback) {
+  try {
+    const chatId = callback.message.chat.id;
+
+    if (!(await isAdmin(chatId))) {
+      return bot().answerCallbackQuery(callback.id, {
+        text: "❌ Access denied!",
+      });
+    }
+
+    // Update state to wait for media
+    const currentState = getState(chatId);
+    setState(chatId, {
+      ...currentState,
+      step: "broadcast_media_upload",
+    });
+
+    await bot().editMessageText(
+      `📢 <b>Broadcast Message</b>\n\n` +
+        `✅ Target: ${
+          currentState.target === "all"
+            ? "All Users"
+            : currentState.target === "admin"
+            ? "Admins"
+            : currentState.target.charAt(0).toUpperCase() +
+              currentState.target.slice(1)
+        }s\n` +
+        `📝 Title: ${currentState.title}\n` +
+        `💬 Message: ${currentState.message.substring(0, 100)}${
+          currentState.message.length > 100 ? "..." : ""
+        }\n\n` +
+        `📎 <b>Send media now:</b>\n` +
+        `• Photo, video, or document\n` +
+        `• Maximum 50MB for videos\n` +
+        `• One media item only\n\n` +
+        `Click "Skip Media" if you don't want to attach anything.`,
+      {
+        chat_id: chatId,
+        message_id: callback.message.message_id,
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "⏭️ Skip Media",
+                callback_data: "broadcast_continue",
+              },
+            ],
+            [
+              {
+                text: "⏪ Back to Message",
+                callback_data: "admin_broadcast",
+              },
+            ],
+          ],
+        },
+      }
+    );
+
+    await bot().answerCallbackQuery(callback.id, {
+      text: "📎 Send media now!",
+    });
+  } catch (error) {
+    console.error("Error in handleBroadcastAttachMedia:", error);
+    bot().answerCallbackQuery(callback.id, { text: "❌ Error!" });
+  }
+}
+
+async function handleBroadcastContinue(callback) {
+  try {
+    const chatId = callback.message.chat.id;
+
+    if (!(await isAdmin(chatId))) {
+      return bot().answerCallbackQuery(callback.id, {
+        text: "❌ Access denied!",
+      });
+    }
+
+    // Update state to move to preview
+    const currentState = getState(chatId);
+    setState(chatId, {
+      ...currentState,
+      step: "broadcast_preview",
+    });
+
+    // Generate preview message
+    const targetDisplayName =
+      currentState.target === "all"
+        ? "All Users"
+        : currentState.target === "admin"
+        ? "Admins"
+        : currentState.target === "broker"
+        ? "Brokers"
+        : currentState.target === "owner"
+        ? "Owners"
+        : currentState.target === "tenant"
+        ? "Tenants"
+        : currentState.target;
+
+    const userCount = await db.getUserCountByType(currentState.target);
+
+    let previewText = `📢 <b>${currentState.title}</b>\n\n${currentState.message}`;
+
+    if (currentState.media) {
+      previewText += `\n\n📎 <i>Media attached</i>`;
+    }
+
+    // If there's media, send it with caption and buttons
+    if (currentState.media) {
+      const caption = `📢 <b>${currentState.title}</b>\n\n${currentState.message}`;
+
+      try {
+        if (currentState.media.type === "photo") {
+          await bot().sendPhoto(chatId, currentState.media.file_id, {
+            caption: caption,
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "✅ Send Broadcast",
+                    callback_data: "broadcast_confirm_send",
+                  },
+                ],
+                [
+                  {
+                    text: "❌ Cancel",
+                    callback_data: "admin_broadcast",
+                  },
+                ],
+              ],
+            },
+          });
+        } else if (currentState.media.type === "video") {
+          await bot().sendVideo(chatId, currentState.media.file_id, {
+            caption: caption,
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "✅ Send Broadcast",
+                    callback_data: "broadcast_confirm_send",
+                  },
+                ],
+                [
+                  {
+                    text: "❌ Cancel",
+                    callback_data: "admin_broadcast",
+                  },
+                ],
+              ],
+            },
+          });
+        } else if (currentState.media.type === "document") {
+          await bot().sendDocument(chatId, currentState.media.file_id, {
+            caption: caption,
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "✅ Send Broadcast",
+                    callback_data: "broadcast_confirm_send",
+                  },
+                ],
+                [
+                  {
+                    text: "❌ Cancel",
+                    callback_data: "admin_broadcast",
+                  },
+                ],
+              ],
+            },
+          });
+        }
+
+        // Delete the original message
+        await bot().deleteMessage(chatId, callback.message.message_id);
+      } catch (mediaError) {
+        console.error("Error sending media preview:", mediaError);
+        // Fallback to text message if media fails
+        await bot().editMessageText(
+          `📢 <b>Broadcast Preview</b>\n\n` +
+            `✅ <b>Target:</b> ${targetDisplayName} (${userCount} users)\n` +
+            `📝 <b>Title:</b> ${currentState.title}\n` +
+            `📎 <b>Media:</b> ${currentState.media.info}\n\n` +
+            `📄 <b>Message Preview:</b>\n` +
+            `───────────────\n` +
+            `${previewText}\n` +
+            `───────────────\n\n` +
+            `📊 <b>Will be sent to ${userCount} users</b>\n\n` +
+            `⚠️ <b>Are you sure you want to send this broadcast?</b>`,
+          {
+            chat_id: chatId,
+            message_id: callback.message.message_id,
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "✅ Send Broadcast",
+                    callback_data: "broadcast_confirm_send",
+                  },
+                ],
+                [
+                  {
+                    text: "❌ Cancel",
+                    callback_data: "admin_broadcast",
+                  },
+                ],
+              ],
+            },
+          }
+        );
+      }
+    } else {
+      // No media - send text message with preview
+      await bot().editMessageText(
+        `📢 <b>Broadcast Preview</b>\n\n` +
+          `✅ <b>Target:</b> ${targetDisplayName} (${userCount} users)\n` +
+          `📝 <b>Title:</b> ${currentState.title}\n\n` +
+          `📄 <b>Message Preview:</b>\n` +
+          `───────────────\n` +
+          `${previewText}\n` +
+          `───────────────\n\n` +
+          `📊 <b>Will be sent to ${userCount} users</b>\n\n` +
+          `⚠️ <b>Are you sure you want to send this broadcast?</b>`,
+        {
+          chat_id: chatId,
+          message_id: callback.message.message_id,
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ Send Broadcast",
+                  callback_data: "broadcast_confirm_send",
+                },
+              ],
+              [
+                {
+                  text: "❌ Cancel",
+                  callback_data: "admin_broadcast",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    }
+
+    await bot().answerCallbackQuery(callback.id, { text: "✅ Ready to send!" });
+  } catch (error) {
+    console.error("Error in handleBroadcastContinue:", error);
+    bot().answerCallbackQuery(callback.id, { text: "❌ Error!" });
+  }
+}
+
+async function handleBroadcastMediaUpload(msg) {
+  try {
+    const chatId = msg.chat.id;
+
+    if (!(await isAdmin(chatId))) {
+      return bot().sendMessage(chatId, "❌ Access denied!");
+    }
+
+    // Check if user is trying to send multiple media (media group)
+    if (msg.media_group_id) {
+      return bot().sendMessage(
+        chatId,
+        "❌ Please send only <b>one media item</b> for broadcast.\n\n" +
+          "📎 Supported formats:\n" +
+          "• Photos (JPG, PNG, etc.)\n" +
+          "• Videos (up to 50MB)\n" +
+          "• Documents (PDF, etc.)\n\n" +
+          "Try sending just one item.",
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "⏭️ Skip Media",
+                  callback_data: "broadcast_continue",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    }
+
+    // Validate media type and size
+    let mediaType = "unknown";
+    let mediaInfo = "";
+
+    if (msg.photo) {
+      mediaType = "photo";
+      mediaInfo = "📸 Photo";
+    } else if (msg.video) {
+      mediaType = "video";
+      const fileSizeMB = (msg.video.file_size / (1024 * 1024)).toFixed(1);
+      mediaInfo = `🎥 Video (${fileSizeMB}MB)`;
+
+      // Check video size limit
+      if (msg.video.file_size > 50 * 1024 * 1024) {
+        return bot().sendMessage(
+          chatId,
+          "❌ Video is too large. Maximum size is <b>50MB</b>.\n\n" +
+            "Please send a smaller video or try a different format.",
+          {
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "⏭️ Skip Media",
+                    callback_data: "broadcast_continue",
+                  },
+                ],
+              ],
+            },
+          }
+        );
+      }
+    } else if (msg.document) {
+      mediaType = "document";
+      const fileName = msg.document.file_name || "Document";
+      const fileSizeMB = (msg.document.file_size / (1024 * 1024)).toFixed(1);
+      mediaInfo = `📄 ${fileName} (${fileSizeMB}MB)`;
+    } else {
+      return bot().sendMessage(
+        chatId,
+        "❌ Unsupported media type. Please send:\n\n" +
+          "• 📸 Photos\n" +
+          "• 🎥 Videos (max 50MB)\n" +
+          "• 📄 Documents\n\n" +
+          "Or skip media attachment.",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "⏭️ Skip Media",
+                  callback_data: "broadcast_continue",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    }
+
+    // Store media information in state
+    const currentState = getState(chatId);
+    setState(chatId, {
+      ...currentState,
+      step: "broadcast_preview",
+      media: {
+        type: mediaType,
+        file_id:
+          msg.photo?.[0]?.file_id ||
+          msg.video?.file_id ||
+          msg.document?.file_id,
+        file_unique_id:
+          msg.photo?.[0]?.file_unique_id ||
+          msg.video?.file_unique_id ||
+          msg.document?.file_unique_id,
+        info: mediaInfo,
+      },
+    });
+
+    // Generate preview message
+    const targetDisplayName =
+      currentState.target === "all"
+        ? "All Users"
+        : currentState.target === "admin"
+        ? "Admins"
+        : currentState.target === "broker"
+        ? "Brokers"
+        : currentState.target === "owner"
+        ? "Owners"
+        : currentState.target === "tenant"
+        ? "Tenants"
+        : currentState.target;
+
+    const userCount = await db.getUserCountByType(currentState.target);
+
+    let previewText = `📢 <b>${currentState.title}</b>\n\n${currentState.message}`;
+    previewText += `\n\n📎 ${mediaInfo}`;
+
+    // Send media with caption and buttons as preview
+    const caption = `📢 <b>${currentState.title}</b>\n\n${currentState.message}`;
+
+    try {
+      if (mediaType === "photo") {
+        await bot().sendPhoto(chatId, msg.photo[0].file_id, {
+          caption: caption,
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ Send Broadcast",
+                  callback_data: "broadcast_confirm_send",
+                },
+              ],
+              [
+                {
+                  text: "❌ Cancel",
+                  callback_data: "admin_broadcast",
+                },
+              ],
+            ],
+          },
+        });
+      } else if (mediaType === "video") {
+        await bot().sendVideo(chatId, msg.video.file_id, {
+          caption: caption,
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ Send Broadcast",
+                  callback_data: "broadcast_confirm_send",
+                },
+              ],
+              [
+                {
+                  text: "❌ Cancel",
+                  callback_data: "admin_broadcast",
+                },
+              ],
+            ],
+          },
+        });
+      } else if (mediaType === "document") {
+        await bot().sendDocument(chatId, msg.document.file_id, {
+          caption: caption,
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ Send Broadcast",
+                  callback_data: "broadcast_confirm_send",
+                },
+              ],
+              [
+                {
+                  text: "❌ Cancel",
+                  callback_data: "admin_broadcast",
+                },
+              ],
+            ],
+          },
+        });
+      }
+    } catch (previewError) {
+      console.error("Error sending media preview:", previewError);
+      // Fallback to text message if media fails
+      await bot().sendMessage(
+        chatId,
+        `📢 <b>Broadcast Preview</b>\n\n` +
+          `✅ <b>Target:</b> ${targetDisplayName} (${userCount} users)\n` +
+          `📝 <b>Title:</b> ${currentState.title}\n` +
+          `📎 <b>Media:</b> ${mediaInfo}\n\n` +
+          `📄 <b>Message Preview:</b>\n` +
+          `───────────────\n` +
+          `${previewText}\n` +
+          `───────────────\n\n` +
+          `📊 <b>Will be sent to ${userCount} users</b>\n\n` +
+          `⚠️ <b>Are you sure you want to send this broadcast?</b>`,
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "✅ Send Broadcast",
+                  callback_data: "broadcast_confirm_send",
+                },
+              ],
+              [
+                {
+                  text: "❌ Cancel",
+                  callback_data: "admin_broadcast",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    }
+  } catch (error) {
+    console.error("Error in handleBroadcastMediaUpload:", error);
+    bot().sendMessage(chatId, "❌ Error processing media. Please try again.");
+  }
+}
+
+async function handleBroadcastConfirmSend(callback) {
+  try {
+    const chatId = callback.message.chat.id;
+
+    if (!(await isAdmin(chatId))) {
+      return bot().answerCallbackQuery(callback.id, {
+        text: "❌ Access denied!",
+      });
+    }
+
+    // Get current state
+    const currentState = getState(chatId);
+    if (!currentState.target || !currentState.title || !currentState.message) {
+      return bot().answerCallbackQuery(callback.id, {
+        text: "❌ Invalid broadcast data!",
+      });
+    }
+
+    // Answer callback query immediately
+    await bot().answerCallbackQuery(callback.id, {
+      text: "🚀 Starting broadcast...",
+    });
+
+    // Clear the state
+    clearState(chatId);
+
+    // Initialize message tracking
+    let currentMessageId = callback.message.message_id;
+
+    // Get target users
+    const users = await db.getUsersForBroadcast(currentState.target);
+    const totalUsers = users.length;
+
+    if (totalUsers === 0) {
+      const noUsersMessage =
+        "❌ <b>No users found</b>\n\nNo active users found for the selected target.";
+      const noUsersKeyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "🏠 Back to Admin Dashboard",
+                callback_data: "admin_back_to_dashboard",
+              },
+            ],
+          ],
+        },
+      };
+
+      // Check if the original message has media
+      const hasMedia =
+        callback.message.photo ||
+        callback.message.video ||
+        callback.message.document;
+
+      if (hasMedia) {
+        // If original message has media, delete it and send a new text message
+        try {
+          await bot().deleteMessage(chatId, callback.message.message_id);
+        } catch (deleteError) {
+          console.error("Error deleting media message:", deleteError);
+        }
+
+        await bot().sendMessage(chatId, noUsersMessage, {
+          parse_mode: "HTML",
+          ...noUsersKeyboard,
+        });
+      } else {
+        // If original message is text, edit it
+        await bot().editMessageText(noUsersMessage, {
+          chat_id: chatId,
+          message_id: callback.message.message_id,
+          parse_mode: "HTML",
+          ...noUsersKeyboard,
+        });
+      }
+      return;
+    }
+
+    // Show sending progress
+    const targetDisplayName =
+      currentState.target === "all"
+        ? "All Users"
+        : currentState.target === "admin"
+        ? "Admins"
+        : currentState.target === "broker"
+        ? "Brokers"
+        : currentState.target === "owner"
+        ? "Owners"
+        : currentState.target === "tenant"
+        ? "Tenants"
+        : currentState.target;
+
+    const progressMessage =
+      `🚀 <b>Broadcasting Message</b>\n\n` +
+      `📊 Target: ${targetDisplayName} (${totalUsers} users)\n` +
+      `📝 Title: ${currentState.title}\n` +
+      `📎 Media: ${currentState.media ? currentState.media.info : "None"}\n\n` +
+      `⏳ Sending messages...\n` +
+      `📈 Progress: 0/${totalUsers}\n` +
+      `✅ Successful: 0\n` +
+      `❌ Failed: 0`;
+
+    // Check if the original message has media (photo, video, document)
+    const hasMedia =
+      callback.message.photo ||
+      callback.message.video ||
+      callback.message.document;
+
+    if (hasMedia) {
+      // If original message has media, delete it and send a new text message
+      try {
+        await bot().deleteMessage(chatId, callback.message.message_id);
+      } catch (deleteError) {
+        console.error("Error deleting media message:", deleteError);
+        // Continue even if deletion fails
+      }
+
+      // Send new progress message
+      const newMessage = await bot().sendMessage(chatId, progressMessage, {
+        parse_mode: "HTML",
+      });
+      currentMessageId = newMessage.message_id;
+    } else {
+      // If original message is text, edit it
+      await bot().editMessageText(progressMessage, {
+        chat_id: chatId,
+        message_id: callback.message.message_id,
+        parse_mode: "HTML",
+      });
+    }
+
+    // Send messages with rate limiting
+    let successful = 0;
+    let failed = 0;
+    let progress = 0;
+
+    // Rate limiting: Send 30 messages per second (Telegram's limit is 30 messages per second per bot)
+    const messagesPerSecond = 20; // Conservative limit
+    const delayBetweenBatches = 1000; // 1 second
+    const messagesPerBatch = messagesPerSecond;
+
+    for (let i = 0; i < users.length; i += messagesPerBatch) {
+      const batch = users.slice(i, i + messagesPerBatch);
+
+      // Send batch in parallel
+      const batchPromises = batch.map(async (user) => {
+        try {
+          if (currentState.media) {
+            // Send with media
+            if (currentState.media.type === "photo") {
+              await bot().sendPhoto(
+                user.telegram_id,
+                currentState.media.file_id,
+                {
+                  caption: `📢 <b>${currentState.title}</b>\n\n${currentState.message}`,
+                  parse_mode: "HTML",
+                }
+              );
+            } else if (currentState.media.type === "video") {
+              await bot().sendVideo(
+                user.telegram_id,
+                currentState.media.file_id,
+                {
+                  caption: `📢 <b>${currentState.title}</b>\n\n${currentState.message}`,
+                  parse_mode: "HTML",
+                }
+              );
+            } else if (currentState.media.type === "document") {
+              await bot().sendDocument(
+                user.telegram_id,
+                currentState.media.file_id,
+                {
+                  caption: `📢 <b>${currentState.title}</b>\n\n${currentState.message}`,
+                  parse_mode: "HTML",
+                }
+              );
+            }
+          } else {
+            // Send text only
+            await bot().sendMessage(
+              user.telegram_id,
+              `📢 <b>${currentState.title}</b>\n\n${currentState.message}`,
+              { parse_mode: "HTML" }
+            );
+          }
+          return { success: true, user };
+        } catch (error) {
+          console.error(
+            `Failed to send to user ${user.telegram_id}:`,
+            error.message
+          );
+          return { success: false, user, error: error.message };
+        }
+      });
+
+      // Wait for batch to complete
+      const results = await Promise.allSettled(batchPromises);
+
+      // Count results
+      results.forEach((result) => {
+        if (result.status === "fulfilled") {
+          if (result.value.success) {
+            successful++;
+          } else {
+            failed++;
+          }
+        } else {
+          failed++;
+        }
+        progress++;
+      });
+
+      // Update progress
+      try {
+        await bot().editMessageText(
+          `🚀 <b>Broadcasting Message</b>\n\n` +
+            `📊 Target: ${targetDisplayName} (${totalUsers} users)\n` +
+            `📝 Title: ${currentState.title}\n` +
+            `📎 Media: ${
+              currentState.media ? currentState.media.info : "None"
+            }\n\n` +
+            `⏳ Sending messages...\n` +
+            `📈 Progress: ${progress}/${totalUsers}\n` +
+            `✅ Successful: ${successful}\n` +
+            `❌ Failed: ${failed}`,
+          {
+            chat_id: chatId,
+            message_id: currentMessageId,
+            parse_mode: "HTML",
+          }
+        );
+      } catch (updateError) {
+        console.error("Error updating progress:", updateError);
+      }
+
+      // Wait before next batch (except for the last batch)
+      if (i + messagesPerBatch < users.length) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, delayBetweenBatches)
+        );
+      }
+    }
+
+    // Show final results
+    await bot().editMessageText(
+      `✅ <b>Broadcast Completed!</b>\n\n` +
+        `📊 Target: ${targetDisplayName}\n` +
+        `📝 Title: ${currentState.title}\n` +
+        `📎 Media: ${
+          currentState.media ? currentState.media.info : "None"
+        }\n\n` +
+        `📈 <b>Results:</b>\n` +
+        `✅ Successful: ${successful}\n` +
+        `❌ Failed: ${failed}\n` +
+        `📊 Total: ${totalUsers}\n\n` +
+        `🎯 Success Rate: ${((successful / totalUsers) * 100).toFixed(1)}%`,
+      {
+        chat_id: chatId,
+        message_id: currentMessageId,
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "📢 Send Another Broadcast",
+                callback_data: "admin_broadcast",
+              },
+            ],
+            [
+              {
+                text: "🏠 Back to Admin Dashboard",
+                callback_data: "admin_back_to_dashboard",
+              },
+            ],
+          ],
+        },
+      }
+    );
+  } catch (error) {
+    console.error("Error in handleBroadcastConfirmSend:", error);
+
+    // Try to show error message
+    try {
+      // First try to edit the message
+      await bot().editMessageText(
+        "❌ <b>Broadcast Failed</b>\n\nAn error occurred while sending the broadcast. Please try again.",
+        {
+          chat_id: callback.message.chat.id,
+          message_id: callback.message.message_id,
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "🔄 Try Again",
+                  callback_data: "admin_broadcast",
+                },
+              ],
+              [
+                {
+                  text: "🏠 Back to Admin Dashboard",
+                  callback_data: "admin_back_to_dashboard",
+                },
+              ],
+            ],
+          },
+        }
+      );
+    } catch (editError) {
+      console.error("Error editing message:", editError);
+
+      // If edit fails (e.g., message has media), delete and send new message
+      try {
+        await bot().deleteMessage(
+          callback.message.chat.id,
+          callback.message.message_id
+        );
+        await bot().sendMessage(
+          callback.message.chat.id,
+          "❌ <b>Broadcast Failed</b>\n\nAn error occurred while sending the broadcast. Please try again.",
+          {
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "🔄 Try Again",
+                    callback_data: "admin_broadcast",
+                  },
+                ],
+                [
+                  {
+                    text: "🏠 Back to Admin Dashboard",
+                    callback_data: "admin_back_to_dashboard",
+                  },
+                ],
+              ],
+            },
+          }
+        );
+      } catch (fallbackError) {
+        console.error("Error with fallback message:", fallbackError);
+        // Last resort - just send a simple message
+        try {
+          await bot().sendMessage(
+            callback.message.chat.id,
+            "❌ Broadcast failed. Please try again using /admin command."
+          );
+        } catch (finalError) {
+          console.error("Final error sending message:", finalError);
+        }
+      }
     }
   }
 }
@@ -625,6 +1853,16 @@ module.exports = {
   handleAdminTokenInput,
   handleAdminTokenSkipNote,
   handleAdminBackToDashboard,
+
+  // Broadcast handlers
+  handleAdminBroadcast,
+  handleBroadcastTargetSelection,
+  handleBroadcastTitleInput,
+  handleBroadcastMessageInput,
+  handleBroadcastAttachMedia,
+  handleBroadcastContinue,
+  handleBroadcastMediaUpload,
+  handleBroadcastConfirmSend,
 
   async handleAdminCommand(msg) {
     try {
@@ -672,6 +1910,12 @@ module.exports = {
                 {
                   text: "🔑 Generate Token",
                   callback_data: "admin_generate_token",
+                },
+              ],
+              [
+                {
+                  text: "📢 Broadcast Message",
+                  callback_data: "admin_broadcast",
                 },
               ],
             ],

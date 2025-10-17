@@ -248,7 +248,8 @@ function setupRoutes() {
           state?.step === "get_cover_photo" ||
           state?.step === "get_additional_photos" ||
           state?.step === "admin_photo_upload" ||
-          state?.step === "user_photo_upload")
+          state?.step === "user_photo_upload" ||
+          state?.step === "broadcast_media_upload")
       ) {
         // Admin photo upload handling
         if (state?.step === "admin_photo_upload") {
@@ -285,6 +286,10 @@ function setupRoutes() {
           } else {
             return postController.handlePhotoUpload(msg);
           }
+        }
+        // Broadcast media upload handling
+        else if (state?.step === "broadcast_media_upload") {
+          return adminController.handleBroadcastMediaUpload(msg);
         }
       }
 
@@ -335,6 +340,12 @@ function setupRoutes() {
         // User rent marking flow
         case "waiting_rent_post_id":
           return userController.handleRentPostIdInput(msg);
+
+        // Broadcast flow
+        case "broadcast_title":
+          return adminController.handleBroadcastTitleInput(msg);
+        case "broadcast_message":
+          return adminController.handleBroadcastMessageInput(msg);
 
         // Post creation flow - Enhanced
         case "get_rooms_count":
@@ -643,6 +654,26 @@ function setupRoutes() {
     } else if (data === "admin_generate_token") {
       await handleCallbackQuery(bot, query, async () => {
         await adminController.handleAdminGenerateToken(query);
+      });
+    } else if (data === "admin_broadcast") {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleAdminBroadcast(query);
+      });
+    } else if (data.startsWith("broadcast_target_")) {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleBroadcastTargetSelection(query);
+      });
+    } else if (data === "broadcast_attach_media") {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleBroadcastAttachMedia(query);
+      });
+    } else if (data === "broadcast_continue") {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleBroadcastContinue(query);
+      });
+    } else if (data === "broadcast_confirm_send") {
+      await handleCallbackQuery(bot, query, async () => {
+        await adminController.handleBroadcastConfirmSend(query);
       });
     } else if (data.startsWith("admin_token_type_")) {
       await handleCallbackQuery(bot, query, async () => {

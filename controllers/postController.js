@@ -747,11 +747,11 @@ module.exports = {
       setState(chatId, { step: "get_description" });
       await bot().sendMessage(
         chatId,
-        "ስለ ቤቱ ተጨማረ መረጃ ካሎት ያጋሩን:\n" + "(ከሌሎት ከታች ያለውን ቁልፍ ይጫኑ)",
+        "ስለ ቤቱ ተጨማሪ መረጃ ካሎት ያጋሩን:\n" + "(ከሌሎት ከታች ያለውን ቁልፍ ይጫኑ)",
         {
           reply_markup: {
             inline_keyboard: [
-              [{ text: "⏭️ ተጨማረ መረጃ የለኝም", callback_data: "skip_description" }],
+              [{ text: "⏭️ ተጨማሪ መረጃ የለኝም", callback_data: "skip_description" }],
             ],
           },
         }
