@@ -1,14 +1,26 @@
 const mysql = require("mysql2/promise");
 
 // Optimized pool configuration for VPS
+const isProduction = process.env.NODE_ENV === "production";
+const connectionLimit = parseInt(
+  process.env.DB_POOL_CONNECTION_LIMIT,
+  10
+) || (isProduction ? 20 : 5);
+const queueLimit = parseInt(process.env.DB_POOL_QUEUE_LIMIT, 10);
+const effectiveQueueLimit = Number.isNaN(queueLimit)
+  ? isProduction
+    ? 0
+    : 20
+  : queueLimit;
+
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
   password: process.env.DB_PASSWORD || "",
   database: process.env.DB_NAME || "betbot",
   waitForConnections: true,
-  connectionLimit: process.env.NODE_ENV === "production" ? 10 : 5, // Reduced for VPS
-  queueLimit: 5, // Reduced queue limit
+  connectionLimit,
+  queueLimit: effectiveQueueLimit,
   enableKeepAlive: true,
   keepAliveInitialDelay: 30000, // Increased keep alive
   acquireTimeout: 15000, // Reduced timeout
@@ -83,13 +95,19 @@ async function testConnection() {
     // Periodic connection cleanup (every 5 minutes)
     setInterval(() => {
       pool.query("SELECT 1").catch((err) => {
+        if (err.message?.includes("Queue limit reached")) {
+          console.warn("Keep-alive skipped due to temporary pool saturation");
+          return;
+        }
         console.error("Keep-alive query failed:", err.message);
       });
     }, 5 * 60 * 1000);
 
-    // Fix: Use our configured connection limit instead of pool.config
-    const connectionLimit = process.env.NODE_ENV === "production" ? 10 : 5;
-    console.log(`📊 Pool configured with ${connectionLimit} max connections`);
+    console.log(
+      `📊 Pool configured: connectionLimit=${connectionLimit}, queueLimit=${
+        effectiveQueueLimit === 0 ? "unlimited" : effectiveQueueLimit
+      }`
+    );
   } catch (error) {
     console.error("❌ Database connection failed:", error.message);
 
