@@ -19,7 +19,7 @@ async function startServer() {
     const isProduction = process.env.NODE_ENV === "production";
     if (isProduction) {
       console.log(
-        "🌐 Analytics available at: https://betbot.shalop.com/analytics"
+        "🌐 Analytics available at: https://betbot.tatekgym.et/analytics"
       );
     } else {
       console.log("🌐 Analytics available at: http://localhost:7070/analytics");

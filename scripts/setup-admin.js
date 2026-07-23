@@ -5,7 +5,9 @@
  * Use this script to add admin privileges to users
  */
 
-require("dotenv").config();
+require("dotenv").config({
+  path: require("path").join(__dirname, "..", ".env"),
+});
 const { pool } = require("../config/database");
 
 async function setupAdmin() {
