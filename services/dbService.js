@@ -26,7 +26,9 @@ async function withRetry(operation, maxRetries = 3) {
       if (
         error.code === "ECONNRESET" ||
         error.code === "PROTOCOL_CONNECTION_LOST" ||
-        error.code === "ETIMEDOUT"
+        error.code === "ETIMEDOUT" ||
+        error.code === "ER_CON_COUNT_ERROR" ||
+        error.message?.includes("Queue limit reached")
       ) {
         console.log(
           `Database operation failed (attempt ${attempt}/${maxRetries}):`,
@@ -213,22 +215,24 @@ module.exports = {
   },
 
   async getPost(postId) {
-    try {
-      const [rows] = await pool.query(
-        `
-        SELECT p.*, u.name as user_name, u.telegram_id, u.phone 
-        FROM posts p
-        LEFT JOIN users u ON p.user_id = u.id
-        WHERE p.id = ?
-      `,
-        [postId]
-      );
+    return withRetry(async () => {
+      try {
+        const [rows] = await pool.query(
+          `
+          SELECT p.*, u.name as user_name, u.telegram_id, u.phone 
+          FROM posts p
+          LEFT JOIN users u ON p.user_id = u.id
+          WHERE p.id = ?
+        `,
+          [postId]
+        );
 
-      return rows[0] || null;
-    } catch (error) {
-      console.error("Error getting post:", error);
-      throw error;
-    }
+        return rows[0] || null;
+      } catch (error) {
+        console.error("Error getting post:", error);
+        throw error;
+      }
+    });
   },
 
   async getPendingPosts() {
@@ -400,15 +404,17 @@ module.exports = {
 
   // Click tracking methods
   async recordClick(postId, userTelegramId, clickType = "contact") {
-    try {
-      await pool.query(
-        "INSERT INTO post_clicks (post_id, user_telegram_id, click_type) VALUES (?, ?, ?)",
-        [postId, userTelegramId, clickType]
-      );
-    } catch (error) {
-      console.error("Error recording click:", error);
-      throw error;
-    }
+    return withRetry(async () => {
+      try {
+        await pool.query(
+          "INSERT INTO post_clicks (post_id, user_telegram_id, click_type) VALUES (?, ?, ?)",
+          [postId, userTelegramId, clickType]
+        );
+      } catch (error) {
+        console.error("Error recording click:", error);
+        throw error;
+      }
+    });
   },
 
   async getPostStats(postId) {
